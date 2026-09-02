@@ -1,0 +1,169 @@
+#!/bin/bash
+# rtxctl — rtx 内网执行器的便捷封装
+# 功能: token 管理 / 多 agent 快捷切换 / 默认 agent 操作（像操作本地一样）
+#
+# 用法:
+#   rtxctl init --ctrl <url> --token <t>      # 配置（ctrl 默认 http://127.0.0.1:19001）
+#   rtxctl config                             # 查看配置（token 打码）
+#   rtxctl ls                                 # 列在线 agent
+#   rtxctl use <agent>                        # 设置默认 agent（多机器切换）
+#   rtxctl who                                # 显示当前默认 agent
+#   rtxctl exec -cmd "whoami"                 # 对默认 agent 执行
+#   rtxctl exec -agent <X> -cmd "..."         # 指定 agent 执行
+#   rtxctl read -path /etc/passwd             # 读文件（默认 agent）
+#   rtxctl write|list|upload|download|info|kill   # 同 rtx，默认 agent
+#   rtxctl raw ...                            # 完全透传 rtx（不注入默认 agent）
+#
+# 配置存 ~/.claude/rtx/（config: ctrl/token, state: 当前 agent），权限 600
+
+set -uo pipefail
+
+RTX_HOME="${RTX_HOME:-$HOME/.claude/rtx}"
+CONFIG="$RTX_HOME/config"
+STATE="$RTX_HOME/state"
+# 解析脚本真实路径（兼容软链调用）
+_RTX_SELF="$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+_RTX_DIR="$(cd "$(dirname "$_RTX_SELF")" && pwd)"
+RTX_ROOT="$_RTX_DIR/bin"
+UI_SCRIPT="$_RTX_DIR/rtx_ui.py"
+
+detect_bin() {
+    local os arch
+    os="$(uname -s)"; arch="$(uname -m)"
+    case "$os:$arch" in
+        Darwin:*)   echo "$RTX_ROOT/rtx" ;;
+        Linux:aarch64) echo "$RTX_ROOT/rtx-linux-arm64" ;;
+        Linux:x86_64)  echo "$RTX_ROOT/rtx-linux-amd64" ;;
+        *) echo "" ;;
+    esac
+}
+
+RTX="$(detect_bin)"
+[ -z "$RTX" ] && { echo "[rtxctl] 不支持的平台" >&2; exit 1; }
+[ -x "$RTX" ] || { echo "[rtxctl] 找不到 rtx 二进制: $RTX" >&2; exit 1; }
+
+load_config() {
+    CTRL="http://127.0.0.1:19001"
+    TOKEN=""
+    [ -f "$CONFIG" ] && { CTRL="$(sed -n 's/^ctrl=//p' "$CONFIG" | head -1)"; TOKEN="$(sed -n 's/^token=//p' "$CONFIG" | head -1)"; }
+    [ -z "$CTRL" ] && CTRL="http://127.0.0.1:19001"
+    [ -f "$STATE" ] && DEFAULT_AGENT="$(cat "$STATE")"
+}
+
+save_config() {
+    mkdir -p "$RTX_HOME"
+    printf 'ctrl=%s\ntoken=%s\n' "$CTRL" "$TOKEN" > "$CONFIG"
+    chmod 600 "$CONFIG"
+}
+
+mask() { # token 打码
+    local t="$1"
+    [ ${#t} -le 8 ] && { echo "****"; return; }
+    echo "${t:0:4}...${t: -4}"
+}
+
+load_config
+
+case "${1:-}" in
+    init)
+        shift
+        CTRL="${CTRL:-http://127.0.0.1:19001}"
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --ctrl) CTRL="$2"; shift 2 ;;
+                --token) TOKEN="$2"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        if [ -z "$TOKEN" ]; then
+            echo "[rtxctl] 需要 --token <token>" >&2
+            exit 1
+        fi
+        save_config
+        echo "[rtxctl] 配置已保存: ctrl=$CTRL token=$(mask "$TOKEN")"
+        ;;
+    config)
+        echo "ctrl : $CTRL"
+        echo "token: $(mask "$TOKEN")"
+        echo "agent: ${DEFAULT_AGENT:-（未设置）}"
+        echo "rtx  : $RTX"
+        ;;
+    ls|agents)
+        [ -z "$TOKEN" ] && { echo "[rtxctl] 未配置 token，先 rtxctl init" >&2; exit 1; }
+        "$RTX" -ctrl "$CTRL" -t "$TOKEN" ls-agents
+        ;;
+    use)
+        [ $# -lt 2 ] && { echo "[rtxctl] 用法: rtxctl use <agent>" >&2; exit 1; }
+        mkdir -p "$RTX_HOME"
+        echo "$2" > "$STATE"
+        chmod 600 "$STATE"
+        echo "[rtxctl] 默认 agent → $2"
+        ;;
+    connect)
+        # TUI 连接选择器: 列 agent → 方向键选 → 回车进入该 agent 执行环境
+        [ -z "$TOKEN" ] && { echo "[rtxctl] 未配置 token" >&2; exit 1; }
+        rm -f "$RTX_HOME/.ui_choice"
+        python3 "$UI_SCRIPT"   # curses 直接连终端显示界面
+        CHOSEN="$(cat "$RTX_HOME/.ui_choice" 2>/dev/null | tr -cd '[:alnum:]_.-')"
+        if [ -n "$CHOSEN" ]; then
+            exec "$0" enter "$CHOSEN"
+        fi
+        exit 0
+        ;;
+    enter)
+        # 一键进入目标执行环境: 设置默认 agent + 切换 rt kali 后端 → AI 命令全穿透
+        [ $# -lt 2 ] && { echo "[rtxctl] 用法: rtxctl enter <agent>" >&2; exit 1; }
+        AG="$2"
+        # 校验 agent 在线
+        if ! "$RTX" -ctrl "$CTRL" -t "$TOKEN" ls-agents 2>/dev/null | awk '{print $1}' | grep -Fqx "$AG"; then
+            echo "[rtxctl] agent '$AG' 不在线，先确认它已反连 (rtxctl ls)" >&2
+            exit 1
+        fi
+        mkdir -p "$RTX_HOME"
+        echo "$AG" > "$STATE"; chmod 600 "$STATE"
+        rt use-rtx-agent "$AG" >/dev/null 2>&1 || true
+        echo ""
+        echo "══════════════════════════════════════════════"
+        echo "  ✅ 已进入执行环境: $AG"
+        echo "  · rt kali '<cmd>'  → 在 $AG 上物理执行"
+        echo "  · rtxctl exec/read/upload → 默认 $AG"
+        echo "  · AI 对话穿透执行, 本地无感"
+        echo "  用法: 直接 @redteam <目标URL> 开始, 或对 AI 下达任务"
+        echo "  退出: rtxctl exit"
+        echo "══════════════════════════════════════════════"
+        ;;
+    exit)
+        rt use-rtx-agent "" >/dev/null 2>&1 || true
+        echo "[rtxctl] 已退出远程执行环境, rt kali 恢复 ssh 后端"
+        ;;
+    who)
+        echo "${DEFAULT_AGENT:-（未设置，rtxctl use <agent>）}"
+        ;;
+    raw)
+        [ -z "$TOKEN" ] && { echo "[rtxctl] 未配置 token" >&2; exit 1; }
+        shift
+        exec "$RTX" -ctrl "$CTRL" -t "$TOKEN" "$@"
+        ;;
+    exec|read|write|list|upload|download|info|kill)
+        [ -z "$TOKEN" ] && { echo "[rtxctl] 未配置 token，先 rtxctl init --token <t>" >&2; exit 1; }
+        cmd="$1"; shift
+        # 若参数里没有 -agent，注入默认 agent
+        has_agent=0
+        for a in "$@"; do [ "$a" = "-agent" ] && has_agent=1; done
+        args=("$@")
+        if [ "$has_agent" = "0" ]; then
+            [ -z "${DEFAULT_AGENT:-}" ] && { echo "[rtxctl] 未设置默认 agent，先 rtxctl use <agent> 或加 -agent <X>" >&2; exit 1; }
+            exec "$RTX" -ctrl "$CTRL" -t "$TOKEN" "$cmd" -agent "$DEFAULT_AGENT" ${args[@]+"${args[@]}"}
+        fi
+        exec "$RTX" -ctrl "$CTRL" -t "$TOKEN" "$cmd" ${args[@]+"${args[@]}"}
+        ;;
+    *)
+        echo "rtxctl — rtx 便捷封装"
+        echo "用法: rtxctl {init|config|ls|use|who|exec|read|write|list|upload|download|info|kill|raw}"
+        echo "  rtxctl ls                          # 列在线 agent"
+        echo "  rtxctl use <agent>                 # 切默认 agent"
+        echo "  rtxctl exec -cmd \"whoami\"        # 对默认 agent 执行"
+        echo "  rtxctl read -path /etc/passwd"
+        exit 0
+        ;;
+esac

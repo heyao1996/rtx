@@ -1,0 +1,13 @@
+# 编译产物
+bin/
+deliver/
+*.exe
+
+# 内部文档（含真实部署细节，不公开）
+REDTEAM.md
+
+# 系统/临时
+.DS_Store
+*.png
+*.jpg
+nohup.out
