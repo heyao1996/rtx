@@ -1,5 +1,7 @@
 # rtx — Reverse RPC Remote Executor
 
+**[English](README_EN.md) | 中文**
+
 一个 **反向 RPC 内网穿透执行器**：让本地的 AI / 终端像操作本地一样，在只有「已上线 agent」能访问的内网/隔离目标机器上执行命令、读写文件。
 
 > ## ⚠️ 免责声明 / Disclaimer
