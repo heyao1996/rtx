@@ -60,6 +60,11 @@ ssh -N -f -L 9001:127.0.0.1:9001 root@<vps>
 # 3. 内网机器部署 agent（零依赖，上传即跑；多平台产物见 bin/）
 ./agent-linux-amd64 -c <vps>:9000 -t <token> -i <唯一机器名> -q
 
+# TLS 加密信道（v1.1，agent 直连公网时推荐）:
+#   server 加 -tls → 自动生成证书并打印 pin(fp)；agent 加 -tls -pin <fp> 回连（证书指纹校验防中间人）
+./server -l :9000 -t <token> --ctrl 127.0.0.1:9001 -tls
+./agent-linux-amd64 -c <vps>:9000 -t <token> -i <name> -tls -pin <server打印的fp>
+
 # 4. 本地操作（rtxctl 已封装 token/默认 agent）
 rtxctl connect          # TUI 选节点 → 进入执行环境
 rtxctl ls               # 在线 agent
