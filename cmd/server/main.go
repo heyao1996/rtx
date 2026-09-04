@@ -22,12 +22,16 @@ import (
 	"time"
 
 	"coreutil/internal/proto"
+	"coreutil/internal/tlsx"
 )
 
 var (
 	listenAddr = flag.String("l", ":9000", "agent reverse listen addr")
 	ctrlAddr   = flag.String("ctrl", ":9001", "control api addr")
 	token      = flag.String("t", "", "auth token (agent 与控制 API 共用)")
+	tlsEnable  = flag.Bool("tls", false, "")
+	certFile   = flag.String("tls-cert", "", "")
+	keyFile    = flag.String("tls-key", "", "")
 )
 
 // Agent 表示一个在线的执行器连接
@@ -215,6 +219,22 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "listen:", err)
 		os.Exit(1)
+	}
+	if *tlsEnable {
+		cf, kf := *certFile, *keyFile
+		if cf == "" {
+			cf = "rtx-server.crt"
+		}
+		if kf == "" {
+			kf = "rtx-server.key"
+		}
+		tcfg, fp, err := tlsx.ServerConfig(cf, kf)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "tls:", err)
+			os.Exit(1)
+		}
+		ln = tlsx.WrapServer(ln, tcfg)
+		fmt.Printf("[server] TLS on, cert=%s/%s pin(fp)=%s\n", cf, kf, fp)
 	}
 	fmt.Printf("[server] agent listen on %s (token %s...)\n", *listenAddr, truncate(*token, 4))
 	for {
