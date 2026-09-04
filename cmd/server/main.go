@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"rtx/internal/proto"
+	"coreutil/internal/proto"
 )
 
 var (

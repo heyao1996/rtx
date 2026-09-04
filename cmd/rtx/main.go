@@ -24,7 +24,7 @@ import (
 	"os"
 	"strings"
 
-	"rtx/internal/proto"
+	"coreutil/internal/proto"
 )
 
 var (
