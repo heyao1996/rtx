@@ -98,7 +98,7 @@ rtxctl upload -path /tmp/x -file ./local
   - neutralized Go module path (no project identifier in binaries)
   - XOR-obfuscated key strings (shell path / error strings / protocol markers), decrypted at runtime
   - silenced flag help text
-- **Docs**: added `OPSEC-EVASION.md` (evasion playbook), `README_EN.md`
+- **Docs**: added `README_EN.md`
 
 ### v1.0 (initial)
 - Reverse-RPC executor: agent / server / rtx CLI / rtxctl / rtx_ui (TUI node picker)

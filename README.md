@@ -98,7 +98,7 @@ rtxctl upload -path /tmp/x -file ./本地
   - module 路径中性化（`rtx` → 中性名），二进制不再暴露项目标识
   - 关键字符串异或混淆运行时解密（shell 路径 / 错误串 / 协议标记等）
   - flag 帮助文本静默化（`-h`/参数错误不再输出说明）
-- **文档**：新增 `OPSEC-EVASION.md`（PEN-200/OSEP 检测原理 + 加固手册）、`README_EN.md`（英文版）
+- **文档**：新增 `README_EN.md`（英文版）
 
 ### v1.0（初始）
 - 反向 RPC 执行器：agent / server / rtx CLI / rtxctl / rtx_ui（TUI 节点选择）
