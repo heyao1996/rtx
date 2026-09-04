@@ -11,3 +11,6 @@ REDTEAM.md
 *.png
 *.jpg
 nohup.out
+
+# 学习经验文档（非项目落地，不公开）
+OPSEC-EVASION.md
