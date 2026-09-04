@@ -90,6 +90,20 @@ rtxctl upload -path /tmp/x -file ./local
 - **Static hardening (v1.1)**: neutral module path, XOR-obfuscated key strings, silenced help text
 - Operational note: on EDR-monitored hosts, deploy agents through legitimate channels; kill and clean up residuals afterwards
 
+## Changelog
+
+### v1.1 (2026-09)
+- **TLS channel**: server `-tls` auto-generates a self-signed cert and prints its fingerprint (`pin(fp)`); agent dials with `-tls -pin <fp>` (certificate pinning against MITM/sniffing). Recommended when agents connect to the public server directly.
+- **Static hardening** (reduce AV/YARA signature surface):
+  - neutralized Go module path (no project identifier in binaries)
+  - XOR-obfuscated key strings (shell path / error strings / protocol markers), decrypted at runtime
+  - silenced flag help text
+- **Docs**: added `OPSEC-EVASION.md` (evasion playbook), `README_EN.md`
+
+### v1.0 (initial)
+- Reverse-RPC executor: agent / server / rtx CLI / rtxctl / rtx_ui (TUI node picker)
+- Multi-platform static binaries (linux/windows/darwin, amd64/arm64)
+
 ## Credits
 
 - Thanks to [lanyi1998](https://github.com/lanyi1998) — the connection-picker UI of `rtxctl connect` is inspired by his [pi-remote](https://github.com/lanyi1998/pi-remote) project (the "Saved remote connections" interaction paradigm).

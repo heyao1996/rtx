@@ -90,6 +90,20 @@ rtxctl upload -path /tmp/x -file ./本地
 - agent 注册需 token 认证
 - 行动注意：EDR 环境部署 agent 走合法通道；用后 kill + 清理残留
 
+## Changelog / 更新记录
+
+### v1.1（2026-09）
+- **TLS 加密信道**：server `-tls` 自动生成自签证书并打印证书指纹（`pin(fp)`）；agent `-tls -pin <fp>` 回连，证书指纹校验防中间人/嗅探。直连公网 server 时建议启用（走已有加密隧道时可作纵深）。
+- **静态特征加固**（降低 AV/YARA 签名命中面）：
+  - module 路径中性化（`rtx` → 中性名），二进制不再暴露项目标识
+  - 关键字符串异或混淆运行时解密（shell 路径 / 错误串 / 协议标记等）
+  - flag 帮助文本静默化（`-h`/参数错误不再输出说明）
+- **文档**：新增 `OPSEC-EVASION.md`（PEN-200/OSEP 检测原理 + 加固手册）、`README_EN.md`（英文版）
+
+### v1.0（初始）
+- 反向 RPC 执行器：agent / server / rtx CLI / rtxctl / rtx_ui（TUI 节点选择）
+- 多平台静态二进制（linux/windows/darwin, amd64/arm64）
+
 ## Credits / 致谢
 
 - 感谢 [lanyi1998](https://github.com/lanyi1998) —— 本项目 `rtxctl connect` 的连接选择器界面灵感来自其 [pi-remote](https://github.com/lanyi1998/pi-remote) 项目（Saved remote connections 交互范式）。
