@@ -33,7 +33,7 @@ Local (AI / brain)                VPS (relay server)               Inner-network
 
 | Component | Description |
 |---|---|
-| `agent` | Executor: dials back to server, handles exec/read/write/list/info/upload/download/kill |
+| `agent` | Executor: dials back to server, handles exec/read/write/list/info/upload/download/kill; Windows build embeds busybox (Unix-syntax exec) |
 | `server` | Controller: agent registry + control HTTP API + task routing |
 | `rtx` | CLI: dispatch tasks through the control API |
 | `rtxctl` | Convenience wrapper: token management, default agent, enter/exit/connect (TUI node picker) |
@@ -91,6 +91,10 @@ rtxctl upload -path /tmp/x -file ./local
 - Operational note: on EDR-monitored hosts, deploy agents through legitimate channels; kill and clean up residuals afterwards
 
 ## Changelog
+
+### v1.2 (2026-09)
+- **Windows agent embeds busybox**: run commands with **Unix syntax** on Windows targets (`ls`/`cat`/`grep`/`sed`/`wget`/pipes/`for` loops); paths use `C:/forward-slash` (`$TEMP` works) instead of low-level PowerShell/cmd; native Windows exes (`ipconfig`/`netstat`...) transparently run through busybox sh.
+- **Execution semantics fix**: removed the bridge to the local Kali execution backend in `rtxctl` — agent commands always run in the agent's **native OS** (Linux=bash / Windows=busybox sh or cmd), no longer assuming Kali semantics; use the local Kali environment for Kali toolchains.
 
 ### v1.1 (2026-09)
 - **TLS channel**: server `-tls` auto-generates a self-signed cert and prints its fingerprint (`pin(fp)`); agent dials with `-tls -pin <fp>` (certificate pinning against MITM/sniffing). Recommended when agents connect to the public server directly.

