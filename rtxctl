@@ -1,6 +1,6 @@
 #!/bin/bash
 # rtxctl — rtx 内网执行器的便捷封装
-# 功能: token 管理 / 多 agent 快捷切换 / 默认 agent 操作（像操作本地一样）
+# 功能: token 管理 / 多 agent 快捷切换 / 默认 agent 操作（对上线 agent 发原生命令）
 #
 # 用法:
 #   rtxctl init --ctrl <url> --token <t>      # 配置（ctrl 默认 http://127.0.0.1:19001）
@@ -121,20 +121,18 @@ case "${1:-}" in
         fi
         mkdir -p "$RTX_HOME"
         echo "$AG" > "$STATE"; chmod 600 "$STATE"
-        rt use-rtx-agent "$AG" >/dev/null 2>&1 || true
         echo ""
         echo "══════════════════════════════════════════════"
-        echo "  ✅ 已进入执行环境: $AG"
-        echo "  · rt kali '<cmd>'  → 在 $AG 上物理执行"
-        echo "  · rtxctl exec/read/upload → 默认 $AG"
-        echo "  · AI 对话穿透执行, 本地无感"
-        echo "  用法: 直接 @redteam <目标URL> 开始, 或对 AI 下达任务"
-        echo "  退出: rtxctl exit"
+        echo "  ✅ 当前操作目标: $AG"
+        echo "  · rtxctl exec/read/upload → 默认 $AG（发目标机【原生命令】）"
+        echo "  · rtxctl ls / use <agent> → 查看/切换节点"
+        echo "  注意: 命令按 $AG 的系统语法执行(Linux 用 bash, Windows 用 cmd),"
+        echo "        不是 Kali 语义——需要 Kali 工具时经 rt kali(本机Kali VM) 或部署到 agent"
         echo "══════════════════════════════════════════════"
         ;;
     exit)
-        rt use-rtx-agent "" >/dev/null 2>&1 || true
-        echo "[rtxctl] 已退出远程执行环境, rt kali 恢复 ssh 后端"
+        rm -f "$STATE"
+        echo "[rtxctl] 已清除默认 agent（操作回到本地）"
         ;;
     who)
         echo "${DEFAULT_AGENT:-（未设置，rtxctl use <agent>）}"

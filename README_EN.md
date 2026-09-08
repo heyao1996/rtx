@@ -27,7 +27,7 @@ Local (AI / brain)                VPS (relay server)               Inner-network
 - **Brain outside, executor inside**: API keys / model inference never land on the inner network; agents don't need outbound access to model APIs
 - **Executor is a 3MB static binary**: pure Go standard library (zero third-party deps), cross-platform (Linux / Windows / macOS / ARM)
 - **Reverse RPC**: agents dial out, punching through NAT and multi-hop tunnels, with automatic reconnection (random jitter)
-- **Seamless AI integration**: point your AI's execution backend at an agent — the AI transparently executes on the target machine
+- **Remote execution for AI**: agents act as AI execution endpoints — commands run natively on the target (Linux= bash / Windows= cmd), results return locally
 
 ## Components
 
@@ -75,7 +75,7 @@ rtxctl upload -path /tmp/x -file ./local
 
 - Local machine can't reach the target but an online agent can → deploy the agent on the reachable host; all AI operations are tunneled there
 - Multi-layer inner networks → agents dial back via tunnel port-forwarding / SOCKS5 (`-proxy`)
-- Seamless AI integration → Claude Code MCP (`rtx_mcp_server.py`) or point your AI tool backend at an agent
+- AI integration → Claude Code MCP (`rtx_mcp_server.py`), AI calls rtx_* tools to execute on agents
 
 ## Build artifacts
 

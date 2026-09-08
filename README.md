@@ -29,7 +29,7 @@
 - **大脑在外部、执行器在内网**：API key / 模型推理不落地内网，内网 agent 不需要出网到模型 API
 - **执行器 3MB 静态二进制**：Go 全标准库实现（零第三方依赖），Linux / Windows / macOS / ARM 全平台
 - **Reverse RPC**：agent 主动回连，穿透 NAT 和多层隧道，断线自动重连（随机 jitter）
-- **AI 无缝穿透**：可把 AI 的执行后端指向某台 agent——AI 无感知地在目标机器上执行
+- **AI 远程执行**：agent 作为 AI 的执行端——命令在目标机器上原生执行（Linux= bash / Windows= cmd），结果直接回到本地
 
 ## 组件
 
@@ -77,7 +77,7 @@ rtxctl upload -path /tmp/x -file ./本地
 
 - 本机访问不到目标、上线 agent 可达 → 把 agent 部署到可达机器，AI 全部操作穿透到该机器
 - 多层内网 → agent 经隧道端口映射 / socks5（`-proxy`）反连
-- 无缝集成 AI → Claude Code MCP（`rtx_mcp_server.py`）或改 AI 工具后端指向 agent
+- 集成 AI → Claude Code MCP（`rtx_mcp_server.py`），AI 直接调用 rtx_* 工具在 agent 上执行
 
 ## 构建产物
 
