@@ -1,4 +1,4 @@
-# rtx — Reverse RPC Remote Executor
+# rtx — AI Reverse RPC Remote Executor
 
 **English | [中文](README_ZH.md)**
 
