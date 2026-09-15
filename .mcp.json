@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "rtx": {
-      "type": "stdio",
-      "command": "python3",
-      "args": ["rtx_mcp_server.py"]
-    }
-  }
-}
