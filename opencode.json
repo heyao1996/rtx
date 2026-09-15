@@ -1,0 +1,29 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "build": {
+      "description": "主开发 agent：构建/校验 rtx（Go 标准库项目）",
+      "prompt": "你是 rtx（反向 RPC 远程执行器）仓库的主开发 agent。项目为纯 Go 标准库、零第三方依赖。修改代码后必须执行 go vet ./... 与 gofmt -l . 校验；构建命令见 AGENTS.md。本工具仅限授权安全测试用途。",
+      "permission": {
+        "bash": {
+          "go build *": "allow",
+          "go vet *": "allow",
+          "gofmt *": "allow",
+          "git *": "allow"
+        },
+        "edit": "allow",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow"
+      }
+    }
+  },
+  "mcp": {
+    "rtx": {
+      "type": "local",
+      "command": ["python3", "rtx_mcp_server.py"],
+      "enabled": true
+    }
+  }
+}
