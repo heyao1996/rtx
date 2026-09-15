@@ -132,6 +132,14 @@ Agent callback mode by egress: **TCP** (default) / **TLS** (`-tls -pin`) / **ws|
 
 ## Changelog
 
+### v1.3 (2026-09)
+- **AI agent integration (Codex / Claude Code / OpenCode)**: out-of-the-box project configuration so any of the three coding agents can work in this repo and drive rtx agents:
+  - `AGENTS.md` — shared project guide (architecture, build, conventions) read by **Codex** and **OpenCode**
+  - `CLAUDE.md` — **Claude Code** project guide
+  - `opencode.json` — **OpenCode** config: a `build` agent (auto-allows `go build`/`go vet`/`gofmt`/`git`) plus rtx MCP registration
+  - Claude Code MCP is registered **globally** (user scope, `~/.claude.json`), so `rtx_*` tools are available in every project rather than only here
+- **`rtx_mcp_server.py` added to the repo**: the stdio MCP server exposing `rtx_ls` / `rtx_enter` / `rtx_exec` / `rtx_read` / `rtx_write` / `rtx_upload` / `rtx_download` / `rtx_info` / `rtx_exit` was referenced by the docs but missing from the tree; it now ships with the project (stdlib only, no third-party deps).
+
 ### v1.2 (2026-09)
 - **Self-contained WebSocket callback (`ws://` / `wss://`)**: agents masquerade as HTTP/WebSocket traffic without any extra tunnel tool on the target — pierces HTTP-whitelist/DPI egress; wss (WS over TLS, reusing `-tls -pin` cert pinning) provides encryption. Multi-hop inner networks can still layer Stowaway port delivery.
 - **Windows agent embeds busybox**: run commands with **Unix syntax** on Windows targets (`ls`/`cat`/`grep`/`sed`/`wget`/pipes/`for` loops); paths use `C:/forward-slash` (`$TEMP` works) instead of low-level PowerShell/cmd; native Windows exes (`ipconfig`/`netstat`...) transparently run through busybox sh.

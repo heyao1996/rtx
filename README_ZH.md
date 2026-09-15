@@ -133,6 +133,14 @@ rtxctl ls && rtxctl exec -cmd "whoami"
 
 ## Changelog / 更新记录
 
+### v1.3（2026-09）
+- **AI agent 接入（Codex / Claude Code / OpenCode）**：开箱即用的项目配置，三种编码 agent 都能在本仓库内工作并驱动 rtx agent：
+  - `AGENTS.md` —— **Codex** 与 **OpenCode** 共用的项目指南（架构 / 构建 / 约定 / 授权边界）
+  - `CLAUDE.md` —— **Claude Code** 项目指南
+  - `opencode.json` —— **OpenCode** 配置：`build` 主 agent（自动放行 `go build`/`go vet`/`gofmt`/`git`）+ rtx MCP 注册
+  - Claude Code 的 MCP 采用**全局注册**（user scope，`~/.claude.json`），因此 `rtx_*` 工具在**任意项目**中均可用，而非仅限本仓库
+- **`rtx_mcp_server.py` 补入仓库**：README 中已介绍但仓库缺失的 stdio MCP 服务器（暴露 `rtx_ls` / `rtx_enter` / `rtx_exec` / `rtx_read` / `rtx_write` / `rtx_upload` / `rtx_download` / `rtx_info` / `rtx_exit`）现已随项目分发（纯标准库，无第三方依赖）。
+
 ### v1.2（2026-09）
 - **WebSocket 自包含回连（ws:// / wss://）**：agent 无需额外落地隧道工具即可伪装 HTTP/WebSocket 流量反连，穿透「只放行 HTTP」的出口白名单/DPI 环境；wss（WS over TLS，沿用 `-tls -pin` 证书指纹校验）提供加密信道。多级内网仍可叠加 Stowaway 递送端口。
 - **Windows agent 内嵌 busybox**：Windows 目标上可用 **Unix 语法**执行命令（`ls`/`cat`/`grep`/`sed`/`wget`/管道/`for` 循环），路径用 `C:/正斜杠`（`$TEMP` 可用），替代低效的 PowerShell/cmd 语法；Windows 原生 exe（`ipconfig`/`netstat` 等）经 busybox sh 自动透传。
