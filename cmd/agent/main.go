@@ -4,21 +4,21 @@ package main
 import (
 	"bufio"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math/rand"
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	"coreutil/internal/proto"
@@ -435,6 +435,17 @@ func dialTCP(addr string) (net.Conn, error) {
 // handleConn 处理一次连接生命周期
 func handleConn(link msgLink) {
 	defer link.Close()
+	// Phase A: 异步执行任务。runTask 在 goroutine 里跑，主循环立即继续 Recv，
+	// 长 exec 不再阻塞 rtx_read / 其它 rtx_exec（agent 单线程消息循环的根因）。
+	// server 端 dispatch 按 TaskID 路由 result（pending sync.Map），天然支持乱序回传，
+	// 故 agent 侧乱序 Send result 会被正确投递到对应等待 channel。
+	// 并发 Send 必须加锁：4 字节长度前缀帧交错会损坏协议帧。
+	var sendMu sync.Mutex
+	send := func(m *proto.Msg) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return link.Send(m)
+	}
 	hello := &proto.Msg{
 		Type:     proto.MsgHello,
 		AgentID:  *agentID,
@@ -445,7 +456,7 @@ func handleConn(link msgLink) {
 		User:     whoami(),
 		PID:      os.Getpid(),
 	}
-	if err := link.Send(hello); err != nil {
+	if err := send(hello); err != nil {
 		return
 	}
 	for {
@@ -455,12 +466,12 @@ func handleConn(link msgLink) {
 		}
 		switch m.Type {
 		case proto.MsgTask:
-			res := runTask(m)
-			if err := link.Send(res); err != nil {
-				return
-			}
+			go func(m *proto.Msg) {
+				res := runTask(m)
+				_ = send(res) // 发送失败只忽略；主循环 Recv 会感知断连并退出
+			}(m)
 		case proto.MsgPing:
-			_ = link.Send(&proto.Msg{Type: proto.MsgBeat, AgentID: *agentID})
+			_ = send(&proto.Msg{Type: proto.MsgBeat, AgentID: *agentID})
 		}
 	}
 }
