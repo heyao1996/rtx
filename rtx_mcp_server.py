@@ -11,6 +11,7 @@ rtx_mcp_server.py — rtx C2 的 Claude Code MCP 工具服务器（stdio）
 （token/默认 agent 持久化在 ~/.claude/rtx/）。无第三方依赖。
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -20,9 +21,14 @@ RTXCTL = "rtxctl"  # PATH 中（软链至 py311/bin）
 
 
 def rtxctl(*args):
-    """调 rtxctl，返回 (stdout, returncode)"""
+    """调 rtxctl，返回 (stdout, returncode)。encoding=utf-8 兜底非 ASCII banner。"""
     try:
-        p = subprocess.run([RTXCTL] + list(args), capture_output=True, text=True, timeout=180)
+        p = subprocess.run(
+            [RTXCTL] + list(args),
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=180,
+        )
         out = (p.stdout or "") + (p.stderr or "")
         return out.strip(), p.returncode
     except subprocess.TimeoutExpired:
@@ -136,7 +142,10 @@ def handle_tool(name, args):
         return rtxctl("list", "-path", a.get("path", "")) if not agent else rtxctl("list", "-agent", agent, "-path", a.get("path", ""))
     if name == "rtx_write":
         if a.get("content") is not None:
-            return rtxctl("write", "-path", a.get("path", ""), a.get("content"))
+            # agent 侧 TaskWrite 期望 base64（cmd/agent/main.go 用 base64.StdEncoding.DecodeString），
+            # rtx CLI write 的位置参数原样进 m.Data，所以这里必须先 base64 编码（与 -file 分支对齐）。
+            enc = base64.b64encode(a.get("content", "").encode("utf-8")).decode("ascii")
+            return rtxctl("write", "-path", a.get("path", ""), enc)
         if a.get("file"):
             return rtxctl("write", "-path", a.get("path", ""), "-file", a.get("file"))
         return "rtx_write 需要 content 或 file", 1
