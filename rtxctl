@@ -124,7 +124,7 @@ case "${1:-}" in
         echo ""
         echo "══════════════════════════════════════════════"
         echo "  ✅ 当前操作目标: $AG"
-        echo "  · rtxctl exec/read/upload → 默认 $AG（发目标机【原生命令】）"
+        echo "  · rtxctl exec/read/upload → 默认 ${AG}（发目标机【原生命令】）"
         echo "  · rtxctl ls / use <agent> → 查看/切换节点"
         echo "  注意: 命令按 $AG 的系统语法执行(Linux 用 bash, Windows 用 cmd),"
         echo "        不是 Kali 语义——需要 Kali 工具时经 rt kali(本机Kali VM) 或部署到 agent"

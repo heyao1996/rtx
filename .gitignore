@@ -14,3 +14,6 @@ nohup.out
 
 # 学习经验文档（非项目落地，不公开）
 OPSEC-EVASION.md
+
+# python cache
+__pycache__/
