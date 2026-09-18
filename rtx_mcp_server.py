@@ -112,6 +112,31 @@ TOOLS = [
             "agent": {"type": "string"},
         }, "required": ["path"]},
     },
+    {
+        "name": "rtx_bg_exec",
+        "description": "后台派发长任务（编译/扫描/安装），立即返回 bg task id，不阻塞 agent 与 MCP。用 rtx_bg_status 轮询进度，rtx_bg_cancel 取消。",
+        "inputSchema": {"type": "object", "properties": {
+            "cmd": {"type": "string", "description": "要在目标机器执行的命令"},
+            "agent": {"type": "string", "description": "可选，指定 agent"},
+        }, "required": ["cmd"]},
+    },
+    {
+        "name": "rtx_bg_status",
+        "description": "查询后台任务状态（running/done/failed）+ exit code + stdout/stderr 尾部（默认 4KB）",
+        "inputSchema": {"type": "object", "properties": {
+            "bgid": {"type": "string", "description": "rtx_bg_exec 返回的 bg task id"},
+            "limit": {"type": "integer", "description": "取输出尾部字节数（默认 4096）"},
+            "agent": {"type": "string"},
+        }, "required": ["bgid"]},
+    },
+    {
+        "name": "rtx_bg_cancel",
+        "description": "取消（kill）后台任务",
+        "inputSchema": {"type": "object", "properties": {
+            "bgid": {"type": "string", "description": "bg task id"},
+            "agent": {"type": "string"},
+        }, "required": ["bgid"]},
+    },
 ]
 
 
@@ -146,6 +171,21 @@ def handle_tool(name, args):
         if a.get("out"):
             return rtxctl("download", "-path", a.get("path", ""), "-out", a.get("out"))
         return rtxctl("download", "-path", a.get("path", ""))
+    if name == "rtx_bg_exec":
+        if agent:
+            return rtxctl("bgexec", "-agent", agent, "-cmd", a.get("cmd", ""))
+        return rtxctl("bgexec", "-cmd", a.get("cmd", ""))
+    if name == "rtx_bg_status":
+        args = ["bgstatus", "-bgid", a.get("bgid", "")]
+        if agent:
+            args[1:1] = ["-agent", agent]
+        if a.get("limit"):
+            args.extend(["-limit", str(a.get("limit"))])
+        return rtxctl(*args)
+    if name == "rtx_bg_cancel":
+        if agent:
+            return rtxctl("bgcancel", "-agent", agent, "-bgid", a.get("bgid", ""))
+        return rtxctl("bgcancel", "-bgid", a.get("bgid", ""))
     return f"未知工具: {name}", 1
 
 

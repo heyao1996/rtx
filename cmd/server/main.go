@@ -39,12 +39,12 @@ var (
 
 // Agent 表示一个在线的执行器连接
 type Agent struct {
-	mu      sync.Mutex
-	conn    net.Conn
-	writer  *bufio.Writer
-	wsSend  func(*proto.Msg) error // WS agent 的消息发送
-	Info    proto.Msg
-	Online  bool
+	mu     sync.Mutex
+	conn   net.Conn
+	writer *bufio.Writer
+	wsSend func(*proto.Msg) error // WS agent 的消息发送
+	Info   proto.Msg
+	Online bool
 }
 
 func (a *Agent) send(m *proto.Msg) error {
@@ -153,6 +153,7 @@ func (s *Server) dispatch(req proto.Msg, timeout time.Duration) (*proto.Msg, err
 	task := &proto.Msg{
 		Type: proto.MsgTask, TaskID: tid, Task: req.Task,
 		Cmd: req.Cmd, Path: req.Path, Data: req.Data, Append: req.Append,
+		BgID: req.BgID, Limit: req.Limit, // Phase B: 后台任务原语透传
 	}
 	if err := a.send(task); err != nil {
 		return nil, fmt.Errorf("send to agent failed: %v", err)
