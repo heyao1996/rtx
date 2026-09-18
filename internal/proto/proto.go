@@ -35,6 +35,12 @@ const (
 	TaskUpload   TaskType = "upload"
 	TaskDownload TaskType = "download"
 	TaskKill     TaskType = "kill" // 执行器退出/自清理
+	// Phase B: 后台任务原语。TaskExecBg 派发即返回 bg id；其余按 bg id 查询/取消。
+	// 向后兼容：旧 agent 收到这些类型会走 default 分支返回 "unknown task" 错误，不崩溃。
+	TaskExecBg  TaskType = "execbg"   // 后台执行，立即返回 bg id
+	TaskStatus  TaskType = "bgstatus" // 查询后台任务状态 + 输出尾部
+	TaskLogTail TaskType = "logtail"  // 仅取输出尾部（增量轮询）
+	TaskCancel  TaskType = "bgcancel" // 取消后台任务
 )
 
 // Msg 统一消息信封
@@ -51,13 +57,14 @@ type Msg struct {
 	// 任务
 	TaskID string   `json:"tid,omitempty"`
 	Task   TaskType `json:"task,omitempty"`
+	BgID   string   `json:"bgid,omitempty"` // Phase B: agent 侧后台任务 id（区别于 TaskID 的 dispatch 路由 id）
 	// 任务参数
 	Cmd    string `json:"cmd,omitempty"`
 	Path   string `json:"p,omitempty"`
 	Data   string `json:"d,omitempty"` // upload/write 用 base64
 	Append bool   `json:"ap,omitempty"`
 	Offset int64  `json:"of,omitempty"`
-	Limit  int    `json:"li,omitempty"`
+	Limit  int    `json:"li,omitempty"` // logtail/status 取输出尾部字节数
 	// 结果
 	OK       bool     `json:"ok,omitempty"`
 	Stdout   string   `json:"so,omitempty"`

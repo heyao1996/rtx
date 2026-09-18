@@ -124,7 +124,7 @@ func main() {
 	}
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "cmds: ls-agents exec read write list upload download info kill")
+		fmt.Fprintln(os.Stderr, "cmds: ls-agents exec read write list upload download info kill bgexec bgstatus bgcancel")
 		os.Exit(1)
 	}
 	cmd := args[0]
@@ -152,13 +152,15 @@ func main() {
 		for _, a := range out.Agents {
 			fmt.Printf("%-24s %s/%s %s user=%s pid=%d online=%v\n", a.ID, a.OS, a.Arch, a.Host, a.User, a.PID, a.Online)
 		}
-	case "exec", "read", "write", "list", "upload", "download", "info", "kill":
+	case "exec", "read", "write", "list", "upload", "download", "info", "kill", "bgexec", "bgstatus", "bgcancel":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		agentID := fs.String("agent", "", "agent id")
 		cmdStr := fs.String("cmd", "", "command (exec)")
 		path := fs.String("path", "", "remote path (read/write/list/upload/download)")
 		file := fs.String("file", "", "local file (write/upload 源, download 目标)")
 		out := fs.String("out", "", "local output file (download)")
+		bgid := fs.String("bgid", "", "bg task id (bgstatus/bgcancel)")
+		limit := fs.Int("limit", 0, "tail bytes (bgstatus, default 4096)")
 		fs.Parse(rest)
 		if *agentID == "" {
 			fmt.Fprintln(os.Stderr, "need -agent")
@@ -262,6 +264,48 @@ func main() {
 			printResult(res)
 		case "kill":
 			res, err := task(*agentID, proto.TaskKill, nil)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			printResult(res)
+		case "bgexec":
+			if *cmdStr == "" {
+				fmt.Fprintln(os.Stderr, "need -cmd")
+				os.Exit(1)
+			}
+			res, err := task(*agentID, proto.TaskExecBg, func(m *proto.Msg) { m.Cmd = *cmdStr })
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			if !res.OK {
+				fmt.Fprintln(os.Stderr, "bgexec error:", res.Err)
+				os.Exit(1)
+			}
+			// bg id 在 res.BgID（也在 res.Stdout）；打印纯 id 便于脚本捕获
+			id := res.BgID
+			if id == "" {
+				id = strings.TrimSpace(res.Stdout)
+			}
+			fmt.Println(id)
+		case "bgstatus":
+			if *bgid == "" {
+				fmt.Fprintln(os.Stderr, "need -bgid")
+				os.Exit(1)
+			}
+			res, err := task(*agentID, proto.TaskStatus, func(m *proto.Msg) { m.BgID = *bgid; m.Limit = *limit })
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			printResult(res)
+		case "bgcancel":
+			if *bgid == "" {
+				fmt.Fprintln(os.Stderr, "need -bgid")
+				os.Exit(1)
+			}
+			res, err := task(*agentID, proto.TaskCancel, func(m *proto.Msg) { m.BgID = *bgid })
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
