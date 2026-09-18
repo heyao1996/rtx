@@ -142,7 +142,7 @@ case "${1:-}" in
         shift
         exec "$RTX" -ctrl "$CTRL" -t "$TOKEN" "$@"
         ;;
-    exec|read|write|list|upload|download|info|kill)
+    exec|read|write|list|upload|download|info|kill|bgexec|bgstatus|bgcancel)
         [ -z "$TOKEN" ] && { echo "[rtxctl] 未配置 token，先 rtxctl init --token <t>" >&2; exit 1; }
         cmd="$1"; shift
         # 若参数里没有 -agent，注入默认 agent

@@ -157,6 +157,70 @@ func whoami() string {
 	return "?"
 }
 
+// ---- Phase B: 后台任务原语 ----
+
+// ringBuffer 固定容量环形字节缓冲：写满覆盖最旧，tail(n) 返回最近 n 字节。
+// 解决 strings.Builder 全量缓冲吃内存 + proto 64MB 上限截断的问题。
+type ringBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+	cap int
+}
+
+func newRingBuffer(capBytes int) *ringBuffer {
+	return &ringBuffer{cap: capBytes}
+}
+
+func (r *ringBuffer) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.buf = append(r.buf, p...)
+	if len(r.buf) > r.cap {
+		// 超容：拷到定长切片，防止 backing array 无限增长
+		tmp := make([]byte, r.cap)
+		copy(tmp, r.buf[len(r.buf)-r.cap:])
+		r.buf = tmp
+	}
+	return len(p), nil
+}
+
+func (r *ringBuffer) tail(n int) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if n <= 0 || n > len(r.buf) {
+		n = len(r.buf)
+	}
+	return string(r.buf[len(r.buf)-n:])
+}
+
+// bgTask 一个后台运行的 exec 任务的状态。
+type bgTask struct {
+	id        string
+	cmd       *exec.Cmd
+	startedAt time.Time
+	mu        sync.Mutex
+	stdout    *ringBuffer
+	stderr    *ringBuffer
+	exitCode  int
+	err       string
+	finished  bool
+}
+
+var (
+	bgReg   = map[string]*bgTask{}
+	bgRegMu sync.RWMutex
+)
+
+func genBgID() string {
+	return fmt.Sprintf("bg-%d-%04d", time.Now().UnixNano(), rand.Intn(10000))
+}
+
+func lookupBg(id string) *bgTask {
+	bgRegMu.RLock()
+	defer bgRegMu.RUnlock()
+	return bgReg[id]
+}
+
 func runTask(t *proto.Msg) *proto.Msg {
 	res := &proto.Msg{Type: proto.MsgResult, TaskID: t.TaskID, Task: t.Task, OK: false}
 	switch t.Task {
@@ -244,6 +308,103 @@ func runTask(t *proto.Msg) *proto.Msg {
 			time.Sleep(300 * time.Millisecond)
 			os.Exit(0)
 		}()
+	case proto.TaskExecBg:
+		// 后台执行：派发即返回 bg id，exec 在 goroutine 里跑，输出进 ringBuffer。
+		// 不占 server dispatch 等待槽（result 立即返回），不阻塞 agent 消息循环。
+		bin, args := shellCmd(t.Cmd)
+		cmd := exec.Command(bin, args...)
+		bt := &bgTask{
+			id:        genBgID(),
+			cmd:       cmd,
+			startedAt: time.Now(),
+			stdout:    newRingBuffer(256 * 1024), // 256KB stdout 封顶
+			stderr:    newRingBuffer(64 * 1024),  // 64KB stderr 封顶
+		}
+		cmd.Stdout = bt.stdout
+		cmd.Stderr = bt.stderr
+		cmd.Env = os.Environ()
+		if err := cmd.Start(); err != nil {
+			res.Err = err.Error()
+			return res
+		}
+		bgRegMu.Lock()
+		bgReg[bt.id] = bt
+		bgRegMu.Unlock()
+		res.OK = true
+		res.BgID = bt.id
+		res.Stdout = bt.id
+		go func() {
+			err := cmd.Wait()
+			bt.mu.Lock()
+			bt.finished = true
+			if err != nil {
+				if ee, ok := err.(*exec.ExitError); ok {
+					bt.exitCode = ee.ExitCode()
+				} else {
+					bt.err = err.Error()
+				}
+			}
+			bt.mu.Unlock()
+		}()
+	case proto.TaskStatus:
+		bt := lookupBg(t.BgID)
+		if bt == nil {
+			res.Err = "no such bg task: " + t.BgID
+			return res
+		}
+		bt.mu.Lock()
+		state := "running"
+		if bt.finished {
+			state = "done"
+			if bt.exitCode != 0 || bt.err != "" {
+				state = "failed"
+			}
+		}
+		res.OK = true
+		res.ExitCode = bt.exitCode
+		n := 4096
+		if t.Limit > 0 {
+			n = t.Limit
+		}
+		res.Stdout = fmt.Sprintf("state=%s exit=%d started=%s err=%s\n--- stdout tail ---\n%s\n--- stderr tail ---\n%s",
+			state, bt.exitCode, bt.startedAt.Format(time.RFC3339), bt.err,
+			bt.stdout.tail(n), bt.stderr.tail(n/2))
+		bt.mu.Unlock()
+	case proto.TaskLogTail:
+		bt := lookupBg(t.BgID)
+		if bt == nil {
+			res.Err = "no such bg task: " + t.BgID
+			return res
+		}
+		n := 4096
+		if t.Limit > 0 {
+			n = t.Limit
+		}
+		res.OK = true
+		res.Stdout = bt.stdout.tail(n)
+		res.Stderr = bt.stderr.tail(n / 2)
+	case proto.TaskCancel:
+		bt := lookupBg(t.BgID)
+		if bt == nil {
+			res.Err = "no such bg task: " + t.BgID
+			return res
+		}
+		if bt.cmd.Process == nil {
+			res.Err = "process not started"
+			return res
+		}
+		err := bt.cmd.Process.Kill()
+		if err != nil {
+			res.Err = err.Error()
+			return res
+		}
+		// 立即标记为失败/已杀，不等 goroutine 的 Wait() 返回（避免 status 竞态显示 running）
+		bt.mu.Lock()
+		bt.finished = true
+		bt.exitCode = -1
+		bt.mu.Unlock()
+		res.OK = true
+		res.Stdout = "killed " + t.BgID
 	default:
 		res.Err = dec(_obfUnk) + string(t.Task)
 	}
