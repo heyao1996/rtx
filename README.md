@@ -132,6 +132,17 @@ Agent callback mode by egress: **TCP** (default) / **TLS** (`-tls -pin`) / **ws|
 
 ## Changelog
 
+### v1.4 (2026-09)
+- **Async task execution (Phase A)**: the agent's message loop no longer blocks on a long `TaskExec` — `runTask` now runs in a goroutine and the main loop keeps `Recv`-ing, so a long compile/install/scan no longer makes the agent unresponsive to `rtx_read` / other `rtx_exec`. A `sync.Mutex` guards `link.Send` so concurrent results don't corrupt the 4-byte length-prefixed frames. No protocol change — server `dispatch` already routes results by `TaskID` (`pending sync.Map`), so out-of-order results are delivered correctly.
+- **Background task primitives (Phase B)**: 4 new task types (protocol extension, backward compatible — old agents return "unknown task", no crash) for long-running jobs:
+  - `execbg` — dispatch returns immediately with a bg id; exec runs in a goroutine; stdout/stderr stream into bounded `ringBuffer`s (256KB/64KB) so memory is capped and the 64MB proto cap can't be blown.
+  - `bgstatus` — query state (running/done/failed) + exit code + stdout/stderr tail (default 4KB, `-limit` configurable).
+  - `logtail` — tail-only variant for incremental polling.
+  - `bgcancel` — kill the bg process; marks finished/exit=-1 immediately (no status-poll race).
+  - MCP tools `rtx_bg_exec` / `rtx_bg_status` / `rtx_bg_cancel`; `bg_exec` returns instantly so the MCP layer stays responsive during long tasks.
+- **Bug fixes**: `rtx_enter` utf-8 crash — rtxctl `$AG` immediately followed by a full-width paren `（` (U+FF08, 0xef..) glued the 0xef byte to the var name under `set -u`, firing `AG\xef: unbound variable` to stderr and breaking MCP's text-mode decode; brace-isolated as `${AG}`. `rtx_write` content path now base64-encodes before passing to rtxctl (agent `TaskWrite` expects base64, raw content caused "illegal base64 data"). `subprocess.run(encoding="utf-8", errors="replace")` defense-in-depth in the MCP server.
+- **Full platform matrix**: prebuilt release archives for darwin/linux/windows × amd64/arm64, each containing agent + server + rtx.
+
 ### v1.3 (2026-09)
 - **AI agent integration (Codex / Claude Code / OpenCode)**: out-of-the-box project configuration so any of the three coding agents can work in this repo and drive rtx agents:
   - `AGENTS.md` — shared project guide (architecture, build, conventions) read by **Codex** and **OpenCode**

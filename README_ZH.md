@@ -133,6 +133,17 @@ rtxctl ls && rtxctl exec -cmd "whoami"
 
 ## Changelog / 更新记录
 
+### v1.4（2026-09）
+- **异步任务执行（Phase A）**：agent 消息循环不再被长 `TaskExec` 阻塞——`runTask` 在 goroutine 里跑，主循环立即继续 `Recv`，长编译/安装/扫描期间 `rtx_read` / 其它 `rtx_exec` 仍可响应。`sync.Mutex` 保护 `link.Send`，避免并发回传结果交错损坏 4 字节长度前缀帧。零协议改动——server `dispatch` 本就按 `TaskID` 路由 result（`pending sync.Map`），乱序回传被正确投递。
+- **后台任务原语（Phase B）**：4 个新 task 类型（协议扩展，向后兼容——旧 agent 走 default 返回 "unknown task"，不崩溃），覆盖长任务全生命周期：
+  - `execbg`——派发即返回 bg id；exec 在 goroutine 里跑；stdout/stderr 流入定容 `ringBuffer`（256KB/64KB），内存封顶、不撞 proto 64MB 上限。
+  - `bgstatus`——查状态（running/done/failed）+ exit code + stdout/stderr 尾部（默认 4KB，`-limit` 可配）。
+  - `logtail`——仅取尾部，增量轮询。
+  - `bgcancel`——杀后台进程；立即置 finished/exit=-1（无 status 轮询竞态）。
+  - MCP 工具 `rtx_bg_exec` / `rtx_bg_status` / `rtx_bg_cancel`；`bg_exec` 秒回，长任务期间 MCP 层不阻塞。
+- **bug 修复**：`rtx_enter` utf-8 崩溃——rtxctl `$AG` 紧跟全角`（`(U+FF08, 0xef..)，`set -u` 把 0xef 字节黏到变量名触发 `AG\xef: unbound variable`→stderr→MCP text 解码炸；改 `${AG}` 花括号隔离。`rtx_write` content 分支先 base64 再传（agent `TaskWrite` 期望 base64，原文导致 "illegal base64 data"）。MCP server 加 `encoding="utf-8", errors="replace"` 纵深防御。
+- **全平台构建矩阵**：darwin/linux/windows × amd64/arm64 预编译发布包，每包含 agent + server + rtx。
+
 ### v1.3（2026-09）
 - **AI agent 接入（Codex / Claude Code / OpenCode）**：开箱即用的项目配置，三种编码 agent 都能在本仓库内工作并驱动 rtx agent：
   - `AGENTS.md` —— **Codex** 与 **OpenCode** 共用的项目指南（架构 / 构建 / 约定 / 授权边界）
