@@ -6,12 +6,12 @@ rtx_mcp_server.py — rtx C2 的 Claude Code MCP 工具服务器（stdio）
 让 claude 打开即带内网/远程机器控制能力（等价打开 C2）：
   rtx_ls / rtx_enter / rtx_exec / rtx_read / rtx_write /
   rtx_list / rtx_upload / rtx_download / rtx_info / rtx_exit
+  rtx_bgexec / rtx_bgstatus / rtx_bgcancel
 
 实现: MCP stdio (newline-delimited JSON-RPC 2.0)，工具内部调用 rtxctl
 （token/默认 agent 持久化在 ~/.claude/rtx/）。无第三方依赖。
 """
 
-import base64
 import json
 import os
 import subprocess
@@ -27,12 +27,12 @@ def rtxctl(*args):
             [RTXCTL] + list(args),
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
-            timeout=180,
+            timeout=600,
         )
         out = (p.stdout or "") + (p.stderr or "")
         return out.strip(), p.returncode
     except subprocess.TimeoutExpired:
-        return "rtxctl 超时（>180s）", 1
+        return "rtxctl 超时（>600s）", 1
     except FileNotFoundError:
         return "rtxctl 不存在（PATH 需含 py311/bin）", 1
     except Exception as e:
@@ -61,11 +61,33 @@ TOOLS = [
     },
     {
         "name": "rtx_exec",
-        "description": "在 agent 机器上执行命令（默认当前 enter 的 agent；可指定）",
+        "description": "在 agent 机器上执行命令（默认当前 enter 的 agent；可指定）。阻塞直到命令完成。",
         "inputSchema": {"type": "object", "properties": {
             "cmd": {"type": "string", "description": "要在目标机器执行的命令"},
             "agent": {"type": "string", "description": "可选，指定 agent"},
         }, "required": ["cmd"]},
+    },
+    {
+        "name": "rtx_bgexec",
+        "description": "后台派发长任务（编译/扫描/安装），立即返回 bg task id，不阻塞 agent 与 MCP。用 rtx_bgstatus 轮询进度，rtx_bgcancel 取消。",
+        "inputSchema": {"type": "object", "properties": {
+            "cmd": {"type": "string", "description": "要在 agent 机器后台执行的命令"},
+            "agent": {"type": "string", "description": "可选，指定 agent"},
+        }, "required": ["cmd"]},
+    },
+    {
+        "name": "rtx_bgstatus",
+        "description": "查询后台任务进度（rtx_bgexec 派发的）",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string", "description": "rtx_bgexec 返回的 task id"},
+        }, "required": ["task_id"]},
+    },
+    {
+        "name": "rtx_bgcancel",
+        "description": "取消正在运行的后台任务",
+        "inputSchema": {"type": "object", "properties": {
+            "task_id": {"type": "string", "description": "rtx_bgexec 返回的 task id"},
+        }, "required": ["task_id"]},
     },
     {
         "name": "rtx_info",
@@ -118,31 +140,6 @@ TOOLS = [
             "agent": {"type": "string"},
         }, "required": ["path"]},
     },
-    {
-        "name": "rtx_bg_exec",
-        "description": "后台派发长任务（编译/扫描/安装），立即返回 bg task id，不阻塞 agent 与 MCP。用 rtx_bg_status 轮询进度，rtx_bg_cancel 取消。",
-        "inputSchema": {"type": "object", "properties": {
-            "cmd": {"type": "string", "description": "要在目标机器执行的命令"},
-            "agent": {"type": "string", "description": "可选，指定 agent"},
-        }, "required": ["cmd"]},
-    },
-    {
-        "name": "rtx_bg_status",
-        "description": "查询后台任务状态（running/done/failed）+ exit code + stdout/stderr 尾部（默认 4KB）",
-        "inputSchema": {"type": "object", "properties": {
-            "bgid": {"type": "string", "description": "rtx_bg_exec 返回的 bg task id"},
-            "limit": {"type": "integer", "description": "取输出尾部字节数（默认 4096）"},
-            "agent": {"type": "string"},
-        }, "required": ["bgid"]},
-    },
-    {
-        "name": "rtx_bg_cancel",
-        "description": "取消（kill）后台任务",
-        "inputSchema": {"type": "object", "properties": {
-            "bgid": {"type": "string", "description": "bg task id"},
-            "agent": {"type": "string"},
-        }, "required": ["bgid"]},
-    },
 ]
 
 
@@ -155,6 +152,14 @@ def handle_tool(name, args):
         return rtxctl("enter", a.get("agent", ""))
     if name == "rtx_exit":
         return rtxctl("exit")
+    if name == "rtx_bgexec":
+        if agent:
+            return rtxctl("bgexec", "-agent", agent, "-cmd", a.get("cmd", ""))
+        return rtxctl("bgexec", "-cmd", a.get("cmd", ""))
+    if name == "rtx_bgstatus":
+        return rtxctl("bgstatus", a.get("task_id", ""))
+    if name == "rtx_bgcancel":
+        return rtxctl("bgcancel", a.get("task_id", ""))
     if name == "rtx_exec":
         if agent:
             return rtxctl("exec", "-agent", agent, "-cmd", a.get("cmd", ""))
@@ -167,10 +172,7 @@ def handle_tool(name, args):
         return rtxctl("list", "-path", a.get("path", "")) if not agent else rtxctl("list", "-agent", agent, "-path", a.get("path", ""))
     if name == "rtx_write":
         if a.get("content") is not None:
-            # agent 侧 TaskWrite 期望 base64（cmd/agent/main.go 用 base64.StdEncoding.DecodeString），
-            # rtx CLI write 的位置参数原样进 m.Data，所以这里必须先 base64 编码（与 -file 分支对齐）。
-            enc = base64.b64encode(a.get("content", "").encode("utf-8")).decode("ascii")
-            return rtxctl("write", "-path", a.get("path", ""), enc)
+            return rtxctl("write", "-path", a.get("path", ""), a.get("content"))
         if a.get("file"):
             return rtxctl("write", "-path", a.get("path", ""), "-file", a.get("file"))
         return "rtx_write 需要 content 或 file", 1
@@ -180,21 +182,6 @@ def handle_tool(name, args):
         if a.get("out"):
             return rtxctl("download", "-path", a.get("path", ""), "-out", a.get("out"))
         return rtxctl("download", "-path", a.get("path", ""))
-    if name == "rtx_bg_exec":
-        if agent:
-            return rtxctl("bgexec", "-agent", agent, "-cmd", a.get("cmd", ""))
-        return rtxctl("bgexec", "-cmd", a.get("cmd", ""))
-    if name == "rtx_bg_status":
-        args = ["bgstatus", "-bgid", a.get("bgid", "")]
-        if agent:
-            args[1:1] = ["-agent", agent]
-        if a.get("limit"):
-            args.extend(["-limit", str(a.get("limit"))])
-        return rtxctl(*args)
-    if name == "rtx_bg_cancel":
-        if agent:
-            return rtxctl("bgcancel", "-agent", agent, "-bgid", a.get("bgid", ""))
-        return rtxctl("bgcancel", "-bgid", a.get("bgid", ""))
     return f"未知工具: {name}", 1
 
 
@@ -206,7 +193,7 @@ def send(msg):
 
 
 def main():
-    server_info = {"name": "rtx-mcp", "version": "1.0.0"}
+    server_info = {"name": "rtx-mcp", "version": "1.1.0"}
     initialized = False
     for line in sys.stdin:
         line = line.strip()
@@ -227,7 +214,7 @@ def main():
                 "serverInfo": server_info,
             }})
         elif method == "notifications/initialized":
-            pass  # 客户端就绪
+            pass
         elif method == "tools/list":
             send({"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}})
         elif method == "tools/call":
