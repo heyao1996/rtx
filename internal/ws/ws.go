@@ -34,11 +34,12 @@ type Conn struct {
 
 func (c *Conn) Close() error { return c.conn.Close() }
 
-// Dial 建立 ws:// 或 wss:// 连接（wss 时带 tls 配置）。
-func Dial(rawurl string, tlsCfg *tls.Config, path string) (*Conn, error) {
+// HostPort 从 ws:// / wss:// URL 解析出 host:port（缺端口按 scheme 补 80/443）。
+// 独立成函数供"经代理拨号"复用：代理要的是目标 host:port，不是 URL。
+func HostPort(rawurl string) (string, error) {
 	u, err := url.Parse(rawurl)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	host := u.Host
 	if !strings.Contains(host, ":") {
@@ -48,6 +49,19 @@ func Dial(rawurl string, tlsCfg *tls.Config, path string) (*Conn, error) {
 			host += ":80"
 		}
 	}
+	return host, nil
+}
+
+// Dial 建立 ws:// 或 wss:// 连接（wss 时带 tls 配置）。
+func Dial(rawurl string, tlsCfg *tls.Config, path string) (*Conn, error) {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return nil, err
+	}
+	host, err := HostPort(rawurl)
+	if err != nil {
+		return nil, err
+	}
 	var nc net.Conn
 	if u.Scheme == "wss" {
 		nc, err = tls.Dial("tcp", host, tlsCfg)
@@ -55,6 +69,21 @@ func Dial(rawurl string, tlsCfg *tls.Config, path string) (*Conn, error) {
 		nc, err = net.Dial("tcp", host)
 	}
 	if err != nil {
+		return nil, err
+	}
+	return DialConn(nc, rawurl, path)
+}
+
+// DialConn 在【已建立】的连接上做客户端 ws 握手。
+//
+// 为何单列（2026-10-02）：agent 的 ws/wss 分支原先直接调 Dial ⇒ 内部 net.Dial/tls.Dial
+// **完全绕过 -proxy**，而 -proxy 正是多层内网"串联出网"的唯一通路。表现为：内网主机上
+// agent 静默直连控制器失败 → 无限重连循环，且不报"proxy 被忽略"（实测复现）。
+// 现在由调用方先建连接（可经 socks5），再交本条做握手 —— 代理与 ws 不再互斥。
+func DialConn(nc net.Conn, rawurl string, path string) (*Conn, error) {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		nc.Close()
 		return nil, err
 	}
 	if path == "" {
@@ -70,7 +99,6 @@ func Dial(rawurl string, tlsCfg *tls.Config, path string) (*Conn, error) {
 		return nil, err
 	}
 	br := bufio.NewReader(nc)
-	// 读状态行 + 头
 	status, err := br.ReadString('\n')
 	if err != nil {
 		nc.Close()

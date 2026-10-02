@@ -544,15 +544,7 @@ func (l *wsLink) Close() error { return l.c.Close() }
 func dialLink() (msgLink, error) {
 	addr := *serverAddr
 	if strings.HasPrefix(addr, "ws://") || strings.HasPrefix(addr, "wss://") {
-		var tcfg *tls.Config
-		if *tlsEnable {
-			cfg, err := tlsx.ClientConfig(*tlsPin)
-			if err != nil {
-				return nil, err
-			}
-			tcfg = cfg
-		}
-		c, err := ws.Dial(addr, tcfg, "/")
+		c, err := dialWS(addr)
 		if err != nil {
 			return nil, err
 		}
@@ -563,6 +555,46 @@ func dialLink() (msgLink, error) {
 		return nil, err
 	}
 	return &tcpLink{conn: conn, r: bufio.NewReader(conn)}, nil
+}
+
+// dialWS 建立 ws/wss 链路，**与 -proxy 兼容**（先经 socks5 拨号，再按需 TLS，最后 ws 握手）。
+//
+// 2026-10-02 修：原实现直接调 ws.Dial ⇒ 内部 net.Dial/tls.Dial **完全绕过 -proxy**，
+// 而 -proxy 是多层内网"串联出网"的唯一通路（实测：`-c ws://… -proxy socks5://…` 时
+// 代理日志 0 条 CONNECT，agent 却直连上线 = 静默失效）。现在两条链路语义一致。
+func dialWS(addr string) (*ws.Conn, error) {
+	var tcfg *tls.Config
+	if *tlsEnable {
+		cfg, err := tlsx.ClientConfig(*tlsPin)
+		if err != nil {
+			return nil, err
+		}
+		tcfg = cfg
+	}
+	if *proxyAddr == "" {
+		return ws.Dial(addr, tcfg, "/")
+	}
+	host, err := ws.HostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := socks5Dial(*proxyAddr, host)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasPrefix(addr, "wss://") {
+		if tcfg == nil {
+			conn.Close()
+			return nil, fmt.Errorf("wss via proxy requires -tls -pin")
+		}
+		tc := tls.Client(conn, tcfg)
+		if err := tc.Handshake(); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		conn = tc
+	}
+	return ws.DialConn(conn, addr, "/")
 }
 
 // dialTCP 原 dial：直连/socks5 + 可选 TLS
@@ -645,6 +677,16 @@ func main() {
 	}
 	if *tlsEnable && *tlsPin == "" {
 		os.Exit(1) // TLS 需 -pin <server 证书指纹>
+	}
+	// 明文门禁（2026-10-02）：-proxy 是"串联出网"的通路，链路上每一跳中转机都会
+	// 看到明文控制流量与文件内容 ⇒ 必须真加密。三种配置分别判定：
+	//   host:port   + -tls -pin  → 加密 ✓
+	//   wss://...   + -tls -pin  → 加密 ✓
+	//   ws://...    + -tls       → ⛔ ws 分支不使用 -tls（明文），必须改用 wss://
+	if *proxyAddr != "" && !(*tlsEnable && *tlsPin != "" && !strings.HasPrefix(*serverAddr, "ws://")) {
+		fmt.Fprintln(os.Stderr, "[rtx] 拒绝启动：-proxy 必须与 -tls -pin 同用，且不可用 ws://（明文）")
+		fmt.Fprintln(os.Stderr, "      理由：串联链路的中转跳板能看到全部明文流量；ws:// 不使用 -tls，请改用 wss://")
+		os.Exit(1)
 	}
 	if *agentID == "" {
 		*agentID = genID()
