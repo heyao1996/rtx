@@ -140,6 +140,26 @@ TOOLS = [
             "agent": {"type": "string"},
         }, "required": ["path"]},
     },
+    {
+        "name": "rtx_socks_up",
+        "description": "在【控制侧】起一个 SOCKS5 穿透监听，流量经目标 agent 的网络栈出去：目标机上不开监听端口、不新增连接。之后用 --socks5-hostname 指向该监听即可直达 agent 侧可达的内网（含远端域名解析）。用 rtx_socks_list 查 mux，rtx_socks_down 停。",
+        "inputSchema": {"type": "object", "properties": {
+            "agent": {"type": "string", "description": "目标 agent id（先 rtx_ls 查看）"},
+            "listen": {"type": "string", "description": "控制侧监听地址，默认 127.0.0.1:1080。⚠️ 勿用 0.0.0.0 —— 无认证 SOCKS 会变成开放代理"},
+        }, "required": ["agent"]},
+    },
+    {
+        "name": "rtx_socks_down",
+        "description": "停止指定的穿透监听（按 mux id）",
+        "inputSchema": {"type": "object", "properties": {
+            "mux": {"type": "integer", "description": "rtx_socks_list 返回的 mux id"},
+        }, "required": ["mux"]},
+    },
+    {
+        "name": "rtx_socks_list",
+        "description": "列出当前穿透监听（mux / agent / 监听地址）",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -156,6 +176,14 @@ def handle_tool(name, args):
         if agent:
             return rtxctl("bgexec", "-agent", agent, "-cmd", a.get("cmd", ""))
         return rtxctl("bgexec", "-cmd", a.get("cmd", ""))
+    if name == "rtx_socks_up":
+        if agent:
+            return rtxctl("socks", "-agent", agent, "-listen", a.get("listen") or "127.0.0.1:1080")
+        return rtxctl("socks", "-listen", a.get("listen") or "127.0.0.1:1080")
+    if name == "rtx_socks_down":
+        return rtxctl("socks", "-stop", str(a.get("mux", "")))
+    if name == "rtx_socks_list":
+        return rtxctl("socks", "-list")
     if name == "rtx_bgstatus":
         return rtxctl("bgstatus", a.get("task_id", ""))
     if name == "rtx_bgcancel":

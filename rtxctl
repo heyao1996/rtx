@@ -142,7 +142,7 @@ case "${1:-}" in
         shift
         exec "$RTX" -ctrl "$CTRL" -t "$TOKEN" "$@"
         ;;
-    exec|read|write|list|upload|download|info|kill|bgexec|bgstatus|bgcancel)
+    exec|read|write|list|upload|download|info|kill|bgexec|bgstatus|bgcancel|socks)
         [ -z "$TOKEN" ] && { echo "[rtxctl] 未配置 token，先 rtxctl init --token <t>" >&2; exit 1; }
         cmd="$1"; shift
         # 若参数里没有 -agent，注入默认 agent
@@ -157,7 +157,7 @@ case "${1:-}" in
         ;;
     *)
         echo "rtxctl — rtx 便捷封装"
-        echo "用法: rtxctl {init|config|ls|use|who|exec|read|write|list|upload|download|info|kill|raw}"
+        echo "用法: rtxctl {init|config|ls|use|who|exec|read|write|list|upload|download|info|kill|raw|socks}"
         echo "  rtxctl ls                          # 列在线 agent"
         echo "  rtxctl use <agent>                 # 切默认 agent"
         echo "  rtxctl exec -cmd \"whoami\"        # 对默认 agent 执行"
