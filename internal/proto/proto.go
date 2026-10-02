@@ -21,6 +21,10 @@ const (
 	// 下行（server -> agent）
 	MsgTask MsgType = "task"
 	MsgPing MsgType = "ping"
+	// MsgMux（双向）：在既有控制通道上承载一条【字节流】通道，供 yamux 之类的
+	// 多路复用器使用。穿透能力即建立在它之上：复用同一条已有连接，
+	// 目标机上不新增监听端口、不新增连接、不新增第三方二进制。
+	MsgMux MsgType = "mux"
 )
 
 // TaskType 任务类型
@@ -72,6 +76,9 @@ type Msg struct {
 	ExitCode int      `json:"ec,omitempty"`
 	Entries  []string `json:"en,omitempty"`
 	Err      string   `json:"err,omitempty"`
+	// 流式承载（MsgMux 专用）
+	MuxID uint32 `json:"mid,omitempty"` // 通道 id（0 = 默认数据通道）
+	MuxOp string `json:"mop,omitempty"` // open | data | close
 }
 
 // WriteMsg 写一条消息（4 字节大端长度 + JSON）
