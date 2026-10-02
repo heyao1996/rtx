@@ -1,4 +1,4 @@
-package socks5
+package relay
 
 import (
 	"bufio"
@@ -29,8 +29,8 @@ func startEcho(t *testing.T) (string, func()) {
 	return ln.Addr().String(), func() { _ = ln.Close() }
 }
 
-// 起一个 SOCKS5 代理，返回地址与"dial 收到过哪些 target"的通道
-func startProxy(t *testing.T, seen chan string) (string, func()) {
+// 起一个中继，返回地址与"dial 收到过哪些 target"的通道
+func startRelay(t *testing.T, seen chan string) (string, func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -75,7 +75,7 @@ func TestConnectFQDNRemoteResolve(t *testing.T) {
 	port, _ := strconv.Atoi(portStr)
 
 	seen := make(chan string, 4)
-	proxy, stopProxy := startProxy(t, seen)
+	proxy, stopProxy := startRelay(t, seen)
 	defer stopProxy()
 
 	c, err := net.Dial("tcp", proxy)
@@ -123,7 +123,7 @@ func TestConnectFQDNRemoteResolve(t *testing.T) {
 // TestRejectNonConnect —— BIND / UDP ASSOCIATE 必须回 0x07，不得静默
 func TestRejectNonConnect(t *testing.T) {
 	seen := make(chan string, 1)
-	proxy, stop := startProxy(t, seen)
+	proxy, stop := startRelay(t, seen)
 	defer stop()
 
 	c, err := net.Dial("tcp", proxy)

@@ -8,7 +8,7 @@
 // 解析器在内网解析，而不是在控制侧解析（否则内网域名必然解析失败）。
 //
 // 全标准库，保持 rtx 零第三方依赖的设计原则。
-package socks5
+package relay
 
 import (
 	"bufio"
@@ -51,21 +51,21 @@ type Dialer func(network, addr string) (net.Conn, error)
 func Serve(conn net.Conn, dial Dialer, logf func(string, ...any)) error {
 	defer conn.Close()
 	if dial == nil {
-		return errors.New("socks5: nil dialer")
+		return errors.New("relay: nil dialer")
 	}
 	br := bufio.NewReader(conn)
 
 	// ---- 1. 方法协商 ----
 	var hdr [2]byte
 	if _, err := io.ReadFull(br, hdr[:]); err != nil {
-		return fmt.Errorf("socks5: read greeting: %w", err)
+		return fmt.Errorf("relay: read greeting: %w", err)
 	}
 	if hdr[0] != ver5 {
-		return fmt.Errorf("socks5: bad version 0x%02x", hdr[0])
+		return fmt.Errorf("relay: bad version 0x%02x", hdr[0])
 	}
 	methods := make([]byte, int(hdr[1]))
 	if _, err := io.ReadFull(br, methods); err != nil {
-		return fmt.Errorf("socks5: read methods: %w", err)
+		return fmt.Errorf("relay: read methods: %w", err)
 	}
 	ok := false
 	for _, m := range methods {
@@ -76,23 +76,23 @@ func Serve(conn net.Conn, dial Dialer, logf func(string, ...any)) error {
 	}
 	if !ok {
 		_, _ = conn.Write([]byte{ver5, mNoAccept})
-		return errors.New("socks5: client offered no supported method")
+		return errors.New("relay: client offered no supported method")
 	}
 	if _, err := conn.Write([]byte{ver5, mNoAuth}); err != nil {
-		return fmt.Errorf("socks5: write method: %w", err)
+		return fmt.Errorf("relay: write method: %w", err)
 	}
 
 	// ---- 2. 请求 ----
 	var req [4]byte
 	if _, err := io.ReadFull(br, req[:]); err != nil {
-		return fmt.Errorf("socks5: read request: %w", err)
+		return fmt.Errorf("relay: read request: %w", err)
 	}
 	if req[0] != ver5 {
-		return fmt.Errorf("socks5: bad request version 0x%02x", req[0])
+		return fmt.Errorf("relay: bad request version 0x%02x", req[0])
 	}
 	if req[1] != cmdConnect {
 		_ = reply(conn, RepCmdNotSupported)
-		return fmt.Errorf("socks5: cmd 0x%02x not supported (only CONNECT)", req[1])
+		return fmt.Errorf("relay: cmd 0x%02x not supported (only CONNECT)", req[1])
 	}
 	host, err := readAddr(br, req[3])
 	if err != nil {
@@ -101,7 +101,7 @@ func Serve(conn net.Conn, dial Dialer, logf func(string, ...any)) error {
 	}
 	var pb [2]byte
 	if _, err := io.ReadFull(br, pb[:]); err != nil {
-		return fmt.Errorf("socks5: read port: %w", err)
+		return fmt.Errorf("relay: read port: %w", err)
 	}
 	port := binary.BigEndian.Uint16(pb[:])
 	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
@@ -111,18 +111,18 @@ func Serve(conn net.Conn, dial Dialer, logf func(string, ...any)) error {
 	if err != nil {
 		_ = reply(conn, RepHostUnreachable)
 		if logf != nil {
-			logf("socks5: dial %s failed: %v", target, err)
+			logf("relay: dial %s failed: %v", target, err)
 		}
-		return fmt.Errorf("socks5: dial %s: %w", target, err)
+		return fmt.Errorf("relay: dial %s: %w", target, err)
 	}
 	defer rc.Close()
 	if logf != nil {
-		logf("socks5: connect %s", target)
+		logf("relay: connect %s", target)
 	}
 
 	// ---- 4. 成功应答（BND.ADDR 填 0.0.0.0:0）----
 	if err := reply(conn, RepSucceeded); err != nil {
-		return fmt.Errorf("socks5: write reply: %w", err)
+		return fmt.Errorf("relay: write reply: %w", err)
 	}
 
 	// ---- 5. 双向转发（从 br 开始，避免丢掉已缓冲的载荷）----
@@ -146,30 +146,30 @@ func readAddr(br *bufio.Reader, atyp byte) (string, error) {
 	case atypIPv4:
 		var b [4]byte
 		if _, err := io.ReadFull(br, b[:]); err != nil {
-			return "", fmt.Errorf("socks5: read ipv4: %w", err)
+			return "", fmt.Errorf("relay: read ipv4: %w", err)
 		}
 		return net.IP(b[:]).String(), nil
 	case atypIPv6:
 		var b [16]byte
 		if _, err := io.ReadFull(br, b[:]); err != nil {
-			return "", fmt.Errorf("socks5: read ipv6: %w", err)
+			return "", fmt.Errorf("relay: read ipv6: %w", err)
 		}
 		return net.IP(b[:]).String(), nil
 	case atypFQDN:
 		var l [1]byte
 		if _, err := io.ReadFull(br, l[:]); err != nil {
-			return "", fmt.Errorf("socks5: read fqdn len: %w", err)
+			return "", fmt.Errorf("relay: read fqdn len: %w", err)
 		}
 		if l[0] == 0 {
-			return "", errors.New("socks5: empty fqdn")
+			return "", errors.New("relay: empty fqdn")
 		}
 		b := make([]byte, int(l[0]))
 		if _, err := io.ReadFull(br, b); err != nil {
-			return "", fmt.Errorf("socks5: read fqdn: %w", err)
+			return "", fmt.Errorf("relay: read fqdn: %w", err)
 		}
 		return string(b), nil
 	default:
-		return "", fmt.Errorf("socks5: unsupported ATYP 0x%02x", atyp)
+		return "", fmt.Errorf("relay: unsupported ATYP 0x%02x", atyp)
 	}
 }
 
