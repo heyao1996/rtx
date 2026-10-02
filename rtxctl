@@ -46,6 +46,8 @@ load_config() {
     CTRL="http://127.0.0.1:19001"
     TOKEN=""
     [ -f "$CONFIG" ] && { CTRL="$(sed -n 's/^ctrl=//p' "$CONFIG" | head -1)"; TOKEN="$(sed -n 's/^token=//p' "$CONFIG" | head -1)"; }
+    # token 经环境变量下发（而非 -t 参数）：避免出现在进程 cmdline（ps/proc 可见）
+    [ -n "${TOKEN:-}" ] && export RTX_TOKEN="$TOKEN"
     [ -z "$CTRL" ] && CTRL="http://127.0.0.1:19001"
     [ -f "$STATE" ] && DEFAULT_AGENT="$(cat "$STATE")"
 }
@@ -71,7 +73,7 @@ case "${1:-}" in
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --ctrl) CTRL="$2"; shift 2 ;;
-                --token) TOKEN="$2"; shift 2 ;;
+                --token) TOKEN="$2"; export RTX_TOKEN="$2"; shift 2 ;;
                 *) shift ;;
             esac
         done
@@ -90,7 +92,7 @@ case "${1:-}" in
         ;;
     ls|agents)
         [ -z "$TOKEN" ] && { echo "[rtxctl] 未配置 token，先 rtxctl init" >&2; exit 1; }
-        "$RTX" -ctrl "$CTRL" -t "$TOKEN" ls-agents
+        "$RTX" -ctrl "$CTRL" ls-agents
         ;;
     use)
         [ $# -lt 2 ] && { echo "[rtxctl] 用法: rtxctl use <agent>" >&2; exit 1; }
@@ -115,7 +117,7 @@ case "${1:-}" in
         [ $# -lt 2 ] && { echo "[rtxctl] 用法: rtxctl enter <agent>" >&2; exit 1; }
         AG="$2"
         # 校验 agent 在线
-        if ! "$RTX" -ctrl "$CTRL" -t "$TOKEN" ls-agents 2>/dev/null | awk '{print $1}' | grep -Fqx "$AG"; then
+        if ! "$RTX" -ctrl "$CTRL" ls-agents 2>/dev/null | awk '{print $1}' | grep -Fqx "$AG"; then
             echo "[rtxctl] agent '$AG' 不在线，先确认它已反连 (rtxctl ls)" >&2
             exit 1
         fi
@@ -140,7 +142,7 @@ case "${1:-}" in
     raw)
         [ -z "$TOKEN" ] && { echo "[rtxctl] 未配置 token" >&2; exit 1; }
         shift
-        exec "$RTX" -ctrl "$CTRL" -t "$TOKEN" "$@"
+        exec "$RTX" -ctrl "$CTRL" "$@"
         ;;
     exec|read|write|list|upload|download|info|kill|bgexec|bgstatus|bgcancel|socks)
         [ -z "$TOKEN" ] && { echo "[rtxctl] 未配置 token，先 rtxctl init --token <t>" >&2; exit 1; }
@@ -151,9 +153,9 @@ case "${1:-}" in
         args=("$@")
         if [ "$has_agent" = "0" ]; then
             [ -z "${DEFAULT_AGENT:-}" ] && { echo "[rtxctl] 未设置默认 agent，先 rtxctl use <agent> 或加 -agent <X>" >&2; exit 1; }
-            exec "$RTX" -ctrl "$CTRL" -t "$TOKEN" "$cmd" -agent "$DEFAULT_AGENT" ${args[@]+"${args[@]}"}
+            exec "$RTX" -ctrl "$CTRL" "$cmd" -agent "$DEFAULT_AGENT" ${args[@]+"${args[@]}"}
         fi
-        exec "$RTX" -ctrl "$CTRL" -t "$TOKEN" "$cmd" ${args[@]+"${args[@]}"}
+        exec "$RTX" -ctrl "$CTRL" "$cmd" ${args[@]+"${args[@]}"}
         ;;
     *)
         echo "rtxctl — rtx 便捷封装"

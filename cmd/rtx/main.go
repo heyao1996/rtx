@@ -141,6 +141,10 @@ func writeLocalFile(p string, data []byte) error {
 
 func main() {
 	flag.Parse()
+	// token 可走环境变量：避免出现在进程 cmdline 里
+	if *token == "" {
+		*token = os.Getenv("RTX_TOKEN")
+	}
 	if *token == "" {
 		fmt.Fprintln(os.Stderr, "usage: rtx -t <token> <cmd> ...")
 		os.Exit(1)

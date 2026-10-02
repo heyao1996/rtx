@@ -473,6 +473,10 @@ func (s *Server) handleAgentConn2(ln *serverWSLink) {
 
 func main() {
 	flag.Parse()
+	// token 可走环境变量：避免出现在进程 cmdline 里
+	if *token == "" {
+		*token = os.Getenv("RTX_TOKEN")
+	}
 	if *token == "" {
 		fmt.Fprintln(os.Stderr, "usage: server -l :9000 -t <token> [--ctrl :9001]")
 		os.Exit(1)
