@@ -11,6 +11,9 @@
 //	rtx ... download -agent <id> -path /tmp/x -out ./local
 //	rtx ... info -agent <id>
 //	rtx ... kill -agent <id>
+//	rtx ... socks -agent <id> -listen 127.0.0.1:1080   # 起穿透（控制侧监听）
+//	rtx ... socks -list
+//	rtx ... socks -stop <mux>
 package main
 
 import (
@@ -62,6 +65,26 @@ func api(path string, body any) ([]byte, error) {
 		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return data, nil
+}
+
+// apiMethod 通用 API 调用（GET/DELETE 等无 body 场景）
+func apiMethod(method, path string, body any) ([]byte, error) {
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, *ctrl+path, rd)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Rtx-Token", *token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
 }
 
 func task(agentID string, t proto.TaskType, extra func(*proto.Msg)) (*proto.Msg, error) {
@@ -124,7 +147,7 @@ func main() {
 	}
 	args := flag.Args()
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "cmds: ls-agents exec read write list upload download info kill bgexec bgstatus bgcancel")
+		fmt.Fprintln(os.Stderr, "cmds: ls-agents exec read write list upload download info kill bgexec bgstatus bgcancel socks")
 		os.Exit(1)
 	}
 	cmd := args[0]
@@ -151,6 +174,41 @@ func main() {
 		}
 		for _, a := range out.Agents {
 			fmt.Printf("%-24s %s/%s %s user=%s pid=%d online=%v\n", a.ID, a.OS, a.Arch, a.Host, a.User, a.PID, a.Online)
+		}
+	case "socks":
+		fs := flag.NewFlagSet("socks", flag.ExitOnError)
+		agentID := fs.String("agent", "", "目标 agent id")
+		listen := fs.String("listen", "127.0.0.1:1080", "控制侧监听地址")
+		stopMux := fs.Uint("stop", 0, "停止指定 mux")
+		doList := fs.Bool("list", false, "列出当前穿透监听")
+		_ = fs.Parse(rest)
+		switch {
+		case *doList:
+			b, err := apiMethod("GET", "/socks", nil)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "err:", err)
+				os.Exit(1)
+			}
+			fmt.Println(strings.TrimSpace(string(b)))
+		case *stopMux != 0:
+			b, err := apiMethod("DELETE", fmt.Sprintf("/socks?mux=%d", *stopMux), nil)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "err:", err)
+				os.Exit(1)
+			}
+			fmt.Println(strings.TrimSpace(string(b)))
+		default:
+			if *agentID == "" {
+				fmt.Fprintln(os.Stderr, "usage: rtx socks -agent <id> [-listen 127.0.0.1:1080] | -list | -stop <mux>")
+				os.Exit(2)
+			}
+			// 监听开在【控制侧】：目标机上不开端口、不新增连接、不新增二进制
+			b, err := api("/socks", map[string]string{"agent": *agentID, "listen": *listen})
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "err:", err)
+				os.Exit(1)
+			}
+			fmt.Println(strings.TrimSpace(string(b)))
 		}
 	case "exec", "read", "write", "list", "upload", "download", "info", "kill", "bgexec", "bgstatus", "bgcancel":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)

