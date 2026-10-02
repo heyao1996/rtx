@@ -684,7 +684,7 @@ func main() {
 	//   wss://...   + -tls -pin  → 加密 ✓
 	//   ws://...    + -tls       → ⛔ ws 分支不使用 -tls（明文），必须改用 wss://
 	if *proxyAddr != "" && !(*tlsEnable && *tlsPin != "" && !strings.HasPrefix(*serverAddr, "ws://")) {
-		fmt.Fprintln(os.Stderr, "[rtx] 拒绝启动：-proxy 必须与 -tls -pin 同用，且不可用 ws://（明文）")
+		fmt.Fprintln(os.Stderr, "[!] 拒绝启动：-proxy 必须与 -tls -pin 同用，且不可用 ws://（明文）")
 		fmt.Fprintln(os.Stderr, "      理由：串联链路的中转跳板能看到全部明文流量；ws:// 不使用 -tls，请改用 wss://")
 		os.Exit(1)
 	}
