@@ -75,7 +75,7 @@ func yamuxCfg() *yamux.Config {
 
 func TestMuxConnRoundTripAndEOF(t *testing.T) {
 	a, b := newLinkPair()
-	ha, hb := NewHub(a), NewHub(b)
+	ha, hb := NewHub(a.Send), NewHub(b.Send)
 	runLoop(a, ha, nil)
 	runLoop(b, hb, nil)
 
@@ -153,7 +153,7 @@ func controlProbe(a *testLink, echoCh <-chan struct{}, n int, timeout time.Durat
 
 func TestControlNotStarvedWhileStreaming(t *testing.T) {
 	a, b := newLinkPair()
-	ha, hb := NewHub(a), NewHub(b)
+	ha, hb := NewHub(a.Send), NewHub(b.Send)
 	echoCh := make(chan struct{}, 256)
 	runLoop(a, ha, func(m *proto.Msg) {
 		if m.Type == "ctl-echo" {
@@ -262,7 +262,7 @@ func TestControlNotStarvedWhileStreaming(t *testing.T) {
 
 func TestOverflowFailsLoudly(t *testing.T) {
 	a, b := newLinkPair()
-	ha, hb := NewHub(a), NewHub(b)
+	ha, hb := NewHub(a.Send), NewHub(b.Send)
 	runLoop(a, ha, nil)
 	runLoop(b, hb, nil)
 
