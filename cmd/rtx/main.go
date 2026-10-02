@@ -84,7 +84,15 @@ func apiMethod(method, path string, body any) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	// 非 2xx 显式报错：否则会把 "404 page not found" 当成数据打印（旧 server 无 /socks 端点时正是这样）
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return b, nil
 }
 
 func task(agentID string, t proto.TaskType, extra func(*proto.Msg)) (*proto.Msg, error) {
