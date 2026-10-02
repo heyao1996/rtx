@@ -27,10 +27,8 @@ import (
 	"coreutil/internal/proto"
 )
 
-// Sender 是最小发送接口（agent/server 各自的链路都满足）。
-type Sender interface {
-	Send(*proto.Msg) error
-}
+// Sender 是发送函数（agent/server 都已有 send 闭包，直接传即可，无需包一层类型）。
+type Sender func(*proto.Msg) error
 
 // ChunkSize 单条 mux:data 消息承载的原始字节数（base64 后约 1.37 倍）。
 const ChunkSize = 16 << 10
@@ -107,7 +105,7 @@ func (h *Hub) Dial(id uint32) (*Conn, error) {
 	c := newConn(h, id)
 	h.conns[id] = c
 	h.mu.Unlock()
-	if err := h.send.Send(&proto.Msg{Type: proto.MsgMux, MuxID: id, MuxOp: "open"}); err != nil {
+	if err := h.send(&proto.Msg{Type: proto.MsgMux, MuxID: id, MuxOp: "open"}); err != nil {
 		_ = c.Close()
 		return nil, err
 	}
@@ -121,6 +119,13 @@ func (h *Hub) Accept() (*Conn, error) {
 		return nil, io.EOF
 	}
 	return c, nil
+}
+
+// Get 按 id 取本侧已登记的通道（对端 open 后即存在）。
+func (h *Hub) Get(id uint32) *Conn {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.conns[id]
 }
 
 // Forget 释放通道登记（读循环结束/重连时调用）。
@@ -210,7 +215,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 		if n > ChunkSize {
 			n = ChunkSize
 		}
-		if err := c.h.send.Send(&proto.Msg{
+		if err := c.h.send(&proto.Msg{
 			Type:  proto.MsgMux,
 			MuxID: c.id,
 			MuxOp: "data",
@@ -226,7 +231,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 
 func (c *Conn) Close() error {
 	c.once.Do(func() {
-		_ = c.h.send.Send(&proto.Msg{Type: proto.MsgMux, MuxID: c.id, MuxOp: "close"})
+		_ = c.h.send(&proto.Msg{Type: proto.MsgMux, MuxID: c.id, MuxOp: "close"})
 		c.cond.L.Lock()
 		c.closed = true
 		c.cond.Broadcast()

