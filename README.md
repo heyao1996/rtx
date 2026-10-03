@@ -30,6 +30,7 @@ Local (AI / brain)                VPS (relay server)               Inner-network
 - **Executor is a 3MB static binary**: pure Go standard library (zero third-party deps), cross-platform (Linux / Windows / macOS / ARM)
 - **Reverse RPC**: agents dial out, punching through NAT and multi-hop tunnels, with automatic reconnection (random jitter)
 - **Remote execution for AI**: agents act as AI execution endpoints — commands run natively on the target (Linux= bash / Windows= cmd), results return locally
+- **Built-in pivoting (v1.5, SOCKS5)**: multiplexed over the existing control connection (yamux) with the listener on the **controller** side — the target gains **no new listening port, no extra binary, no extra connection**; `socks5h` (remote DNS) so inner-network names resolve on the agent side; hosts without egress chain in via `-proxy socks5://<pivot>:1080`
 
 ## Components
 
@@ -40,7 +41,7 @@ Local (AI / brain)                VPS (relay server)               Inner-network
 | `rtx` | CLI: dispatch tasks through the control API |
 | `rtxctl` | Convenience wrapper: token management, default agent, enter/exit/connect (TUI node picker) |
 | `rtx_ui.py` | Node connection picker (VS Code Remote-style TUI) |
-| `rtx_mcp_server.py` | Claude Code / MCP client tools (rtx_ls/rtx_enter/rtx_exec/...) |
+| `rtx_mcp_server.py` | Claude Code / MCP client tools (rtx_ls/rtx_enter/rtx_exec/.../rtx_socks_up, 16 total) |
 
 ## Quick start
 
@@ -131,6 +132,14 @@ Agent callback mode by egress: **TCP** (default) / **TLS** (`-tls -pin`) / **ws|
 - Operational note: on EDR-monitored hosts, deploy agents through legitimate channels; kill and clean up residuals afterwards
 
 ## Changelog
+
+### v1.5 (2026-10)
+- **Native SOCKS5 pivoting** (`rtx socks` + 3 new MCP tools, 16 total): a yamux session is multiplexed over the existing control connection (`internal/link` adapts the message link to `net.Conn`), and each accepted local connection becomes one stream carrying a SOCKS5 conversation served by `internal/relay` on the agent. Because the **listener lives on the controller side**, the target gets no new listening port, no extra connection and no third-party binary; `socks5h` semantics are preserved (domains are resolved by the agent). Verified end-to-end with zero third-party tunneling tools: Mac → VPS controller → agent inside an isolated network → container.
+- **Multi-hop chaining fix**: the `ws://` / `wss://` branch **completely bypassed `-proxy`** (measured: zero CONNECT on the SOCKS proxy while the agent still came online = silent failure; on a no-egress host it looked like an endless reconnect loop). `ws.Dial` was split into `HostPort` / `DialConn` so the agent can dial through the proxy first; TLS is then end-to-end through the pivot.
+- **Cleartext guard (fail-closed)**: `-proxy` now requires `-tls -pin` and rejects `ws://` (the ws branch does not use `-tls`), so chained traffic can never be silently cleartext.
+- **Auth**: `RTX_TOKEN` environment variable support in agent / server / rtx and `rtxctl`, so the token no longer shows up in the process command line; `-t` remains supported.
+- **Dependency**: vendored `hashicorp/yamux` (MPL-2.0, LICENSE included). Builds stay offline-reproducible (`-mod=vendor`, verified with `GOPROXY=off`). Cost: agent binary +116 KB (+2.1%).
+- **Regression guard**: `internal/link` keeps inbound data in bounded per-channel buffers and fails that channel loudly on overflow instead of back-pressuring the message loop — measured: while a yamux stream pushed 97 MB, control messages still answered in microseconds (1.23× idle p50 under a real 20 MB load over two WAN hops, zero timeouts).
 
 ### v1.4 (2026-09)
 - **Async task execution (Phase A)**: the agent's message loop no longer blocks on a long `TaskExec` — `runTask` now runs in a goroutine and the main loop keeps `Recv`-ing, so a long compile/install/scan no longer makes the agent unresponsive to `rtx_read` / other `rtx_exec`. A `sync.Mutex` guards `link.Send` so concurrent results don't corrupt the 4-byte length-prefixed frames. No protocol change — server `dispatch` already routes results by `TaskID` (`pending sync.Map`), so out-of-order results are delivered correctly.

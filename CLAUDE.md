@@ -30,7 +30,7 @@ API 并下发任务（执行命令 / 读写文件 / 传输数据），如同直�
 - `rtxctl` — bash 便捷封装：token 管理 / 默认 agent / TUI picker
 - `rtx_ui.py` — curses 节点选择器
 - `rtx_mcp_server.py` — stdio MCP 服务器，向 Claude Code/MCP 客户端暴露
-  `rtx_ls / rtx_enter / rtx_exec / rtx_read / rtx_write / ...`（内部调用 rtxctl）
+  `rtx_ls / rtx_enter / rtx_exec / rtx_read / rtx_write / rtx_socks_up / ...`（内部调用 rtxctl；共 16 个工具）
 - `bin/` — 构建产物（gitignored）
 
 ## 构建与校验

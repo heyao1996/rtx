@@ -30,6 +30,7 @@
 - **执行器 3MB 静态二进制**：Go 全标准库实现（零第三方依赖），Linux / Windows / macOS / ARM 全平台
 - **Reverse RPC**：agent 主动回连，穿透 NAT 和多层隧道，断线自动重连（随机 jitter）
 - **AI 远程执行**：agent 作为 AI 的执行端——命令在目标机器上原生执行（Linux= bash / Windows= cmd），结果直接回到本地
+- **自带穿透（v1.5，SOCKS5）**：复用已有控制连接做多路复用（yamux），**监听开在控制侧** —— 目标机**不开新端口、不落新二进制、不新增连接**；支持 `socks5h`（域名由 agent 侧解析）；无出网主机可用 `-proxy socks5://<跳板>:1080` 逐层接入
 
 ## 组件
 
@@ -40,7 +41,7 @@
 | `rtx` | CLI：通过控制 API 派发任务 |
 | `rtxctl` | 便捷封装：token 管理、默认 agent、enter/exit/connect（TUI 选节点） |
 | `rtx_ui.py` | 节点连接选择器（仿 VS Code Remote 的 TUI） |
-| `rtx_mcp_server.py` | Claude Code / MCP 客户端工具（rtx_ls/rtx_enter/rtx_exec/...） |
+| `rtx_mcp_server.py` | Claude Code / MCP 客户端工具（rtx_ls/rtx_enter/rtx_exec/…/rtx_socks_up，共 16 个） |
 
 ## 快速开始
 
@@ -132,6 +133,14 @@ rtxctl ls && rtxctl exec -cmd "whoami"
 - 行动注意：EDR 环境部署 agent 走合法通道；用后 kill + 清理残留
 
 ## Changelog / 更新记录
+
+### v1.5（2026-10）
+- **原生 SOCKS5 穿透**（`rtx socks` + 3 个新 MCP 工具，共 16 个）：在已有控制连接上多路复用一条 yamux 会话（`internal/link` 把消息链路适配成 `net.Conn`），每条接入的本地连接 = 一条流 = 一次由 agent 侧 `internal/relay` 处理的 SOCKS5 会话。**监听开在控制侧** ⇒ 目标机不开新端口、不新增连接、不落第三方二进制；保留 `socks5h` 语义（域名由 agent 侧解析）。真实环境端到端验证：Mac → VPS 控制器 → 隔离内网里的 agent → 容器，全程零第三方隧道工具。
+- **多层串联缺陷修复**：`ws://` / `wss://` 分支原先**完全绕过 `-proxy`**（实测：SOCKS 代理 0 条 CONNECT 而 agent 仍上线 = 静默失效；在无出网主机上表现为无限重连循环）。`ws.Dial` 拆出 `HostPort` / `DialConn`，agent 先经代理拨号，TLS 端到端穿透跳板。
+- **明文门禁（fail-closed）**：`-proxy` 现在强制要求 `-tls -pin` 且拒绝 `ws://`（ws 分支不使用 `-tls`），串联流量不可能静默明文。
+- **凭据**：agent / server / rtx 与 `rtxctl` 全面支持 `RTX_TOKEN` 环境变量，token 不再出现在进程命令行；`-t` 仍兼容。
+- **依赖**：vendor 入库 `hashicorp/yamux`（MPL-2.0，随附 LICENSE）。构建保持离线可复现（`-mod=vendor`，`GOPROXY=off` 实测通过）。代价：agent 二进制 +116 KB（+2.1%）。
+- **回归护栏**：`internal/link` 的入站数据进有界缓冲，溢出时**显式失败该通道**而非反压消息循环——实测隧道推 97 MB 时控制消息仍在微秒级（真实环境 20MB 满载跨两跳 WAN：p50 为空载的 1.23×，零超时）。
 
 ### v1.4（2026-09）
 - **异步任务执行（Phase A）**：agent 消息循环不再被长 `TaskExec` 阻塞——`runTask` 在 goroutine 里跑，主循环立即继续 `Recv`，长编译/安装/扫描期间 `rtx_read` / 其它 `rtx_exec` 仍可响应。`sync.Mutex` 保护 `link.Send`，避免并发回传结果交错损坏 4 字节长度前缀帧。零协议改动——server `dispatch` 本就按 `TaskID` 路由 result（`pending sync.Map`），乱序回传被正确投递。

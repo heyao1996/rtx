@@ -7,6 +7,7 @@ rtx_mcp_server.py — rtx C2 的 Claude Code MCP 工具服务器（stdio）
   rtx_ls / rtx_enter / rtx_exec / rtx_read / rtx_write /
   rtx_list / rtx_upload / rtx_download / rtx_info / rtx_exit
   rtx_bgexec / rtx_bgstatus / rtx_bgcancel
+  rtx_socks_up / rtx_socks_down / rtx_socks_list（穿透：控制侧起 SOCKS，流量经 agent 网络栈）
 
 实现: MCP stdio (newline-delimited JSON-RPC 2.0)，工具内部调用 rtxctl
 （token/默认 agent 持久化在 ~/.claude/rtx/）。无第三方依赖。
