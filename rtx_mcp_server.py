@@ -143,10 +143,11 @@ TOOLS = [
     },
     {
         "name": "rtx_socks_up",
-        "description": "在【控制侧】起一个 SOCKS5 穿透监听，流量经目标 agent 的网络栈出去：目标机上不开监听端口、不新增连接。之后用 --socks5-hostname 指向该监听即可直达 agent 侧可达的内网（含远端域名解析）。用 rtx_socks_list 查 mux，rtx_socks_down 停。",
+        "description": "起 SOCKS5 穿透监听，流量经目标 agent 的网络栈出去。mode=ctrl（默认）：监听在【控制侧】，目标机上不开端口；此后 --socks5-hostname 指向该监听即直达 agent 侧内网（含远端解析）。mode=expose：监听在【agent 本机】，⚠️ 会在目标机开端口 —— 仅用于打穿下一层（同网段无出网主机用 -proxy socks5://<本机IP>:<port> 经这一跳回连控制器）。用 rtx_socks_list 查 mux，rtx_socks_down 停。",
         "inputSchema": {"type": "object", "properties": {
             "agent": {"type": "string", "description": "目标 agent id（先 rtx_ls 查看）"},
-            "listen": {"type": "string", "description": "控制侧监听地址，默认 127.0.0.1:1080。⚠️ 勿用 0.0.0.0 —— 无认证 SOCKS 会变成开放代理"},
+            "listen": {"type": "string", "description": "监听地址，默认 127.0.0.1:1080。ctrl 模式下 ⚠️ 勿用 0.0.0.0（无认证 SOCKS = 开放代理）；expose 模式需 agent 本机可达地址，如 0.0.0.0:1080"},
+            "mode": {"type": "string", "enum": ["ctrl", "expose"], "description": "ctrl=控制侧监听（默认，目标机无端口）；expose=agent 侧监听（打穿下一层，目标机开端口）"},
         }, "required": ["agent"]},
     },
     {
@@ -178,9 +179,13 @@ def handle_tool(name, args):
             return rtxctl("bgexec", "-agent", agent, "-cmd", a.get("cmd", ""))
         return rtxctl("bgexec", "-cmd", a.get("cmd", ""))
     if name == "rtx_socks_up":
+        args = []
         if agent:
-            return rtxctl("socks", "-agent", agent, "-listen", a.get("listen") or "127.0.0.1:1080")
-        return rtxctl("socks", "-listen", a.get("listen") or "127.0.0.1:1080")
+            args += ["-agent", agent]
+        args += ["-listen", a.get("listen") or "127.0.0.1:1080"]
+        if (a.get("mode") or "").strip() == "expose":
+            args.append("-expose")
+        return rtxctl("socks", *args)
     if name == "rtx_socks_down":
         return rtxctl("socks", "-stop", str(a.get("mux", "")))
     if name == "rtx_socks_list":

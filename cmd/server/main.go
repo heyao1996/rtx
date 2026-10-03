@@ -83,10 +83,12 @@ type Server struct {
 
 // socksEntry 一个已启动的穿透监听
 type socksEntry struct {
-	muxID uint32
-	agent string
-	ln    net.Listener
-	sess  *yamux.Session
+	muxID  uint32
+	agent  string
+	ln     net.Listener   // 仅 mode=ctrl（控制侧监听）
+	sess   *yamux.Session // 仅 mode=ctrl
+	kind   string         // "ctrl"（默认，控制侧监听）| "expose"（agent 侧暴露）
+	expose string         // mode=expose 时 agent 侧监听地址
 }
 
 func NewServer(tok string) *Server {
@@ -240,6 +242,38 @@ func (s *Server) startSocks(agentID, listen string) (uint32, string, error) {
 	return id, ln.Addr().String(), nil
 }
 
+// startSocksExpose 让 agent 在【它自己的网络里】监听一个 SOCKS5 端口。
+//
+// ⚠️ 与 startSocks 相反：这会在**目标机**上开监听端口（`ss -tln` 可见）。
+// 用途只有一个 —— 打穿下一层：同网段内"出不了网"的主机可以用
+// `-proxy socks5://<本机IP>:<port>` 经这一跳回连控制器。用完务 stopSocks。
+func (s *Server) startSocksExpose(agentID, listen string) (uint32, string, error) {
+	s.mu.Lock()
+	_, ok := s.agents[agentID]
+	s.mu.Unlock()
+	if !ok {
+		return 0, "", fmt.Errorf("agent not online: %s", agentID)
+	}
+	if listen == "" {
+		return 0, "", fmt.Errorf("expose: listen address required")
+	}
+	res, err := s.dispatch(proto.Msg{AgentID: agentID, Task: proto.TaskSocksExpose, Cmd: listen}, 20*time.Second)
+	if err != nil {
+		return 0, "", fmt.Errorf("agent 拒绝暴露 socks: %w", err)
+	}
+	addr := strings.TrimSpace(res.Stdout)
+	if addr == "" {
+		addr = listen
+	}
+	s.socksMu.Lock()
+	s.socksSeq++
+	id := s.socksSeq
+	s.socks[id] = &socksEntry{muxID: id, agent: agentID, kind: "expose", expose: listen}
+	s.socksMu.Unlock()
+	fmt.Printf("[server] socks EXPOSED on agent %s at %s (mux %d) —— 目标机已开监听端口\n", agentID, listen, id)
+	return id, addr, nil
+}
+
 func (s *Server) socksAcceptLoop(e *socksEntry) {
 	for {
 		c, err := e.ln.Accept()
@@ -270,6 +304,18 @@ func (s *Server) stopSocks(id uint32) error {
 	if e == nil {
 		return fmt.Errorf("no such socks mux: %d", id)
 	}
+	if e.kind == "expose" {
+		s.mu.Lock()
+		_, ok := s.agents[e.agent]
+		s.mu.Unlock()
+		if ok {
+			if _, err := s.dispatch(proto.Msg{AgentID: e.agent, Task: proto.TaskSocksExpose, Cmd: e.expose, MuxOp: "close"}, 20*time.Second); err != nil {
+				fmt.Printf("[server] expose close 失败（agent 侧可能仍在监听 %s）: %v\n", e.expose, err)
+			}
+		}
+		fmt.Printf("[server] socks expose stopped (mux %d, %s@%s)\n", id, e.agent, e.expose)
+		return nil
+	}
 	_ = e.ln.Close()
 	_ = e.sess.Close()
 	fmt.Printf("[server] socks stopped (mux %d)\n", id)
@@ -281,9 +327,14 @@ func (s *Server) listSocks() []map[string]any {
 	defer s.socksMu.Unlock()
 	var out []map[string]any
 	for _, e := range s.socks {
-		out = append(out, map[string]any{
-			"mux": e.muxID, "agent": e.agent, "listen": e.ln.Addr().String(),
-		})
+		m := map[string]any{"mux": e.muxID, "agent": e.agent, "kind": e.kind}
+		if e.ln != nil {
+			m["listen"] = e.ln.Addr().String()
+		}
+		if e.expose != "" {
+			m["expose"] = e.expose
+		}
+		out = append(out, m)
 	}
 	return out
 }
@@ -318,12 +369,23 @@ func (s *Server) httpAPI() http.Handler {
 	mux.HandleFunc("/socks", auth(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
-			var req struct{ Agent, Listen string }
+			var req struct {
+				Agent  string `json:"agent"`
+				Listen string `json:"listen"`
+				Mode   string `json:"mode"` // ""/"ctrl" = 控制侧监听（默认）；"expose" = agent 侧暴露
+			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			if req.Listen == "" {
 				req.Listen = "127.0.0.1:1080"
 			}
-			id, addr, err := s.startSocks(req.Agent, req.Listen)
+			var id uint32
+			var addr string
+			var err error
+			if req.Mode == "expose" {
+				id, addr, err = s.startSocksExpose(req.Agent, req.Listen)
+			} else {
+				id, addr, err = s.startSocks(req.Agent, req.Listen)
+			}
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return

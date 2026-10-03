@@ -30,7 +30,7 @@
 - **执行器 3MB 静态二进制**：Go 全标准库实现（零第三方依赖），Linux / Windows / macOS / ARM 全平台
 - **Reverse RPC**：agent 主动回连，穿透 NAT 和多层隧道，断线自动重连（随机 jitter）
 - **AI 远程执行**：agent 作为 AI 的执行端——命令在目标机器上原生执行（Linux= bash / Windows= cmd），结果直接回到本地
-- **自带穿透（v1.5，SOCKS5）**：复用已有控制连接做多路复用（yamux），**监听开在控制侧** —— 目标机**不开新端口、不落新二进制、不新增连接**；支持 `socks5h`（域名由 agent 侧解析）；无出网主机可用 `-proxy socks5://<跳板>:1080` 逐层接入
+- **自带穿透（v1.5，SOCKS5）**：复用已有控制连接做多路复用（yamux），**监听开在控制侧** —— 目标机**不开新端口、不落新二进制、不新增连接**；支持 `socks5h`（域名由 agent 侧解析）；无出网主机可用 `rtx socks -expose`（v1.6，跳板侧暴露）+ `-proxy socks5://<跳板>:1080 -tls -pin` 逐层接入
 
 ## 组件
 
@@ -133,6 +133,12 @@ rtxctl ls && rtxctl exec -cmd "whoami"
 - 行动注意：EDR 环境部署 agent 走合法通道；用后 kill + 清理残留
 
 ## Changelog / 更新记录
+
+### v1.6（2026-10）
+- **无出网主机的 N 跳串联**（`rtx socks -expose`）：所在网段无出网的机器，现在可**经上一层跳板的 SOCKS 监听**被控，全程零第三方隧道工具。`-expose` 让跳板 agent **在自己网络里**开监听（`TaskSocksExpose`，复用已有 `internal/relay`），内网主机即可 `-proxy socks5://<跳板>:1080` 回连；MCP `rtx_socks_up` 增加 `mode`（`ctrl` | `expose`），工具总数不变（16）。
+- **代价明写不藏**：`-expose` 是**唯一会在目标机开监听端口**的模式 —— 只绑内网网关/网段地址（**勿 0.0.0.0**），用完 `rtx socks -stop <mux>`；默认的控制侧监听仍是"目标机零新增端口"。
+- **真实无出网环境端到端验证**（docker `--internal`，每一跳都 TLS+pinning）：容器既到不了 1.1.1.1、也**直连不到控制器**（`Network is unreachable`），但其 agent 仍经跳板暴露的 SOCKS **成功上线**；3 跳取内网服务 = HTTP 200 / 6,205,600 B / 1.91 s，两端 sha256 **逐字节一致**，而控制器所在主机直连该内网地址 = 000 超时。多一跳的开销落在测量噪声内（同文件同 server：2 跳 1.95–2.13 s vs 3 跳 1.11–1.76 s）。
+- **明文门禁实战生效**：首次 N 跳尝试被 rtx 自己的 fail-closed 门禁拦下（`-proxy` 必须配 `-tls -pin`）—— 对"中转跳板可见明文"的链路，这正是预期行为。
 
 ### v1.5（2026-10）
 - **原生 SOCKS5 穿透**（`rtx socks` + 3 个新 MCP 工具，共 16 个）：在已有控制连接上多路复用一条 yamux 会话（`internal/link` 把消息链路适配成 `net.Conn`），每条接入的本地连接 = 一条流 = 一次由 agent 侧 `internal/relay` 处理的 SOCKS5 会话。**监听开在控制侧** ⇒ 目标机不开新端口、不新增连接、不落第三方二进制；保留 `socks5h` 语义（域名由 agent 侧解析）。真实环境端到端验证：Mac → VPS 控制器 → 隔离内网里的 agent → 容器，全程零第三方隧道工具。

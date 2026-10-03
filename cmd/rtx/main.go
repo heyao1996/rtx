@@ -12,6 +12,7 @@
 //	rtx ... info -agent <id>
 //	rtx ... kill -agent <id>
 //	rtx ... socks -agent <id> -listen 127.0.0.1:1080   # 起穿透（控制侧监听）
+//	rtx ... socks -agent <id> -listen 0.0.0.0:1080 -expose  # agent 侧暴露（打穿下一层）
 //	rtx ... socks -list
 //	rtx ... socks -stop <mux>
 package main
@@ -190,7 +191,8 @@ func main() {
 	case "socks":
 		fs := flag.NewFlagSet("socks", flag.ExitOnError)
 		agentID := fs.String("agent", "", "目标 agent id")
-		listen := fs.String("listen", "127.0.0.1:1080", "控制侧监听地址")
+		listen := fs.String("listen", "127.0.0.1:1080", "监听地址（默认控制侧；-expose 时为 agent 本机地址）")
+		expose := fs.Bool("expose", false, "在【agent 侧】监听（打穿下一层用；⚠️ 目标机会开端口）")
 		stopMux := fs.Uint("stop", 0, "停止指定 mux")
 		doList := fs.Bool("list", false, "列出当前穿透监听")
 		_ = fs.Parse(rest)
@@ -211,11 +213,15 @@ func main() {
 			fmt.Println(strings.TrimSpace(string(b)))
 		default:
 			if *agentID == "" {
-				fmt.Fprintln(os.Stderr, "usage: rtx socks -agent <id> [-listen 127.0.0.1:1080] | -list | -stop <mux>")
+				fmt.Fprintln(os.Stderr, "usage: rtx socks -agent <id> [-listen 127.0.0.1:1080] [-expose] | -list | -stop <mux>")
 				os.Exit(2)
 			}
-			// 监听开在【控制侧】：目标机上不开端口、不新增连接、不新增二进制
-			b, err := api("/socks", map[string]string{"agent": *agentID, "listen": *listen})
+			// 默认监听开在【控制侧】：目标机上不开端口、不新增连接、不新增二进制
+			body := map[string]string{"agent": *agentID, "listen": *listen}
+			if *expose {
+				body["mode"] = "expose"
+			}
+			b, err := api("/socks", body)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "err:", err)
 				os.Exit(1)

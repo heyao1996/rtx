@@ -30,7 +30,7 @@ Local (AI / brain)                VPS (relay server)               Inner-network
 - **Executor is a 3MB static binary**: pure Go standard library (zero third-party deps), cross-platform (Linux / Windows / macOS / ARM)
 - **Reverse RPC**: agents dial out, punching through NAT and multi-hop tunnels, with automatic reconnection (random jitter)
 - **Remote execution for AI**: agents act as AI execution endpoints — commands run natively on the target (Linux= bash / Windows= cmd), results return locally
-- **Built-in pivoting (v1.5, SOCKS5)**: multiplexed over the existing control connection (yamux) with the listener on the **controller** side — the target gains **no new listening port, no extra binary, no extra connection**; `socks5h` (remote DNS) so inner-network names resolve on the agent side; hosts without egress chain in via `-proxy socks5://<pivot>:1080`
+- **Built-in pivoting (v1.5, SOCKS5)**: multiplexed over the existing control connection (yamux) with the listener on the **controller** side — the target gains **no new listening port, no extra binary, no extra connection**; `socks5h` (remote DNS) so inner-network names resolve on the agent side; hosts without egress chain in via `rtx socks -expose` on the pivot (v1.6) + `-proxy socks5://<pivot>:1080 -tls -pin`
 
 ## Components
 
@@ -132,6 +132,11 @@ Agent callback mode by egress: **TCP** (default) / **TLS** (`-tls -pin`) / **ws|
 - Operational note: on EDR-monitored hosts, deploy agents through legitimate channels; kill and clean up residuals afterwards
 
 ## Changelog
+
+### v1.6 (2026-10)
+- **N-hop chaining for no-egress hosts** (`rtx socks -expose`): a host with no route off its own segment can now be controlled **through the previous hop's SOCKS listener** with zero third-party tunneling tools. `-expose` makes the pivot agent listen **inside its own network** (`TaskSocksExpose`, served by the existing `internal/relay`), so the inner host can dial `-proxy socks5://<pivot>:1080`; `MCP rtx_socks_up` gained a `mode` parameter (`ctrl` | `expose`), tool count unchanged (16). Trade-off, documented rather than hidden: `-expose` is the **only** mode that opens a listening port on the target — bind it to the inner gateway/segment address (never `0.0.0.0`) and stop it with `rtx socks -stop <mux>` when done; the default controller-side listener stays at zero new ports.
+- **Verified end-to-end in a real no-egress network** (docker `--internal`, TLS+pinning on every hop): the container could not reach 1.1.1.1 **or** the controller directly (`Network is unreachable`), yet its agent came online through the pivot's exposed SOCKS; a 3-hop fetch of an inner-network service returned HTTP 200 / 6,205,600 B / 1.91 s with a **byte-identical sha256** at both ends, while a direct attempt from the controller host timed out (000). The extra hop cost nothing measurable (2-hop 1.95–2.13 s vs 3-hop 1.11–1.76 s for the same file and server).
+- **Cleartext guard proven in anger**: the first N-hop attempt was refused by rtx's own fail-closed guard (`-proxy` requires `-tls -pin`), which is exactly the intended behaviour for a chain whose intermediate hops can see plaintext.
 
 ### v1.5 (2026-10)
 - **Native SOCKS5 pivoting** (`rtx socks` + 3 new MCP tools, 16 total): a yamux session is multiplexed over the existing control connection (`internal/link` adapts the message link to `net.Conn`), and each accepted local connection becomes one stream carrying a SOCKS5 conversation served by `internal/relay` on the agent. Because the **listener lives on the controller side**, the target gets no new listening port, no extra connection and no third-party binary; `socks5h` semantics are preserved (domains are resolved by the agent). Verified end-to-end with zero third-party tunneling tools: Mac → VPS controller → agent inside an isolated network → container.

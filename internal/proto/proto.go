@@ -48,6 +48,10 @@ const (
 	// TaskSocks（穿透）：在指定的 MsgMux 通道上开 yamux 服务端，
 	// 每条接受到的流跑一个 SOCKS5 会话（RFC 1928 CONNECT，socks5h 远端解析）。
 	TaskSocks TaskType = "socks"
+	// TaskSocksExpose：让 agent 在【本机网络】监听一个 SOCKS5 端口（地址见 Cmd），
+	// 供同网段"无出网"的主机经它回连控制器（那些主机用 -proxy socks5://<本机>:<port>）。
+	// ⚠️ 这会**在目标机上开监听端口** —— 与控制侧监听方向相反，只在打穿下一层时用。
+	TaskSocksExpose TaskType = "socksexpose"
 )
 
 // Msg 统一消息信封
