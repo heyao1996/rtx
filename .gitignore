@@ -1,6 +1,7 @@
 # 编译产物
 bin/
-dist/          # build_all.sh 的产物（每次构建 rm -rf 重建；v1.x 发布包见 GitHub Releases）
+# build_all.sh 的产物（每次构建 rm -rf 重建；正式发布包见 GitHub Releases）
+dist/
 deliver/
 *.exe
 
